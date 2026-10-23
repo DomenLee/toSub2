@@ -1,0 +1,40 @@
+name: tosub2
+services:
+  tosub2:
+    image: tosub2:8548397-server-v3
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    pids_limit: 160
+    mem_limit: 768m
+    cpus: 1.0
+    environment:
+      TOSUB2_AUTO_REAUTH: "${TOSUB2_AUTO_REAUTH:-false}"
+    ports:
+      - "127.0.0.1:4399:4399"
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m,mode=1777
+    volumes:
+      - /opt/tosub2/data:/data
+      - /opt/tosub2/secrets:/run/secrets:ro
+    networks:
+      - app
+    healthcheck:
+      test: [CMD, node, -e, "const fs=require('node:fs');fetch('http://127.0.0.1:4399/api/bootstrap',{headers:{Authorization:'Basic '+Buffer.from('admin:'+fs.readFileSync('/run/secrets/console-password','utf8').trim()).toString('base64')}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+networks:
+  app:
+    external: true
+    name: sub2api-trial_production-egress

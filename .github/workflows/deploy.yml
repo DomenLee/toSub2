@@ -1,0 +1,79 @@
+name: Deploy toSub2
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tosub2-production
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/check.yml
+
+  release:
+    name: Build, isolate-test and publish
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build immutable production image
+        env:
+          IMAGE: ghcr.io/domenlee/tosub2:${{ github.sha }}
+        run: |
+          docker build -f deploy/server/Dockerfile --label "org.opencontainers.image.revision=$GITHUB_SHA" --label "org.opencontainers.image.source=https://github.com/DomenLee/toSub2" -t "$IMAGE" .
+      - name: Test real production entrypoint without external network or production data
+        env:
+          IMAGE: ghcr.io/domenlee/tosub2:${{ github.sha }}
+        run: |
+          for test in repair.integration.mjs accounts.integration.mjs; do
+            docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --add-host sub2api:127.0.0.1 --tmpfs /data:rw,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=0700 --tmpfs /tmp:rw,nosuid,nodev,size=64m,mode=1777 -e TOSUB2_ISOLATED_TEST=true --mount "type=bind,source=$PWD/deploy/server,target=/checks,readonly" "$IMAGE" node "/checks/$test"
+          done
+      - name: Publish tested image to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ghcr.io/domenlee/tosub2:${{ github.sha }}
+        run: |
+          printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u domenlee --password-stdin
+          docker push "$IMAGE"
+          docker logout ghcr.io
+
+  deploy:
+    name: Deploy only toSub2 with server guard and rollback
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Configure restricted SSH credential and pinned host key
+        env:
+          DEPLOY_KEY: ${{ secrets.VULTR_DEPLOY_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VULTR_KNOWN_HOSTS }}
+        run: |
+          test -n "$DEPLOY_KEY" && test -n "$KNOWN_HOSTS"
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/tosub2"
+          printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+      - name: Deploy immutable main image
+        env:
+          VULTR_HOST: ${{ secrets.VULTR_HOST }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          test -n "$VULTR_HOST"
+          printf '%s\n' "$GHCR_TOKEN" | ssh -F /dev/null -i "$HOME/.ssh/tosub2" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "root@$VULTR_HOST" "deploy $GITHUB_SHA"
+      - name: Remove runner SSH credential
+        if: always()
+        run: rm -f "$HOME/.ssh/tosub2"

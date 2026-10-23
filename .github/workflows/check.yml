@@ -3,11 +3,24 @@ name: Check
 on:
   push:
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
 
 jobs:
+  server:
+    name: Production integration patches
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: node deploy/server/check.mjs
+      - run: bash -n deploy/server/deploy-github.sh
   test:
     name: Node.js ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

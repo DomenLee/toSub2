@@ -1,0 +1,108 @@
+import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import { createSync } from "./sync.mjs";
+
+const root = await fs.mkdtemp(path.join(os.tmpdir(), "tosub2-server-test-"));
+const source = { name: "test@example.invalid", platform: "openai", type: "oauth", credentials: { email: "test@example.invalid", chatgpt_account_id: "workspace-a", access_token: "FAKE_ACCESS", refresh_token: "FAKE_REFRESH" }, concurrency: 10, priority: 1, group_ids: [999], proxy_id: 999 };
+const job = { id: crypto.randomUUID(), email: source.name, status: "completed", resultSaved: true, outputPath: path.join(root, "oauth.json") };
+const write = async () => fs.writeFile(job.outputPath, JSON.stringify({ type: "sub2api-data", accounts: [source] }));
+const calls = [];
+let accounts = [];
+let fail = false;
+const request = async (endpoint, options = {}) => {
+  calls.push({ endpoint, options });
+  if (fail) throw new Error("Fake upstream unavailable");
+  if (endpoint.includes("?")) return { items: accounts, pages: 1 };
+  if (endpoint === "/api/v1/admin/accounts" && options.method === "POST") { accounts = [{ ...options.body, id: 12 }]; return accounts[0]; }
+  if (endpoint.endsWith("/apply-oauth-credentials")) { accounts[0] = { ...accounts[0], credentials: { ...accounts[0].credentials, ...options.body.credentials } }; return accounts[0]; }
+  return accounts[0];
+};
+try {
+  await write();
+  const jobs = new Map([[job.id, job]]);
+  const sync = await createSync({ jobs, request, stateFile: path.join(root, "sync.json") });
+  await sync.sync(job);
+  assert.equal(sync.status()[0].status, "synced");
+  const created = calls.find(call => call.options.method === "POST").options;
+  assert.equal(created.body.group_ids, undefined);
+  assert.equal(created.body.proxy_id, undefined);
+  assert.equal(created.body.concurrency, 10);
+  assert.ok(created.headers["Idempotency-Key"]);
+  const count = calls.length;
+  await sync.sync(job);
+  assert.equal(calls.length, count);
+  accounts[0].credentials.model_mapping = { example: "model" };
+  source.credentials.access_token = "FAKE_ACCESS_UPDATED";
+  await write();
+  await sync.sync(job);
+  assert.equal(accounts.length, 1);
+  assert.equal(accounts[0].credentials.access_token, "FAKE_ACCESS_UPDATED");
+  assert.deepEqual(accounts[0].credentials.model_mapping, { example: "model" });
+  assert.deepEqual(Object.keys(calls.find(call => call.endpoint.endsWith("/apply-oauth-credentials")).options.body), ["type", "credentials", "extra"]);
+  source.credentials.access_token = "FAKE_ACCESS_RETRY";
+  await write();
+  fail = true;
+  await sync.sync(job);
+  assert.equal(sync.status()[0].status, "failed");
+  fail = false;
+  await sync.sync(job, true);
+  assert.equal(sync.status()[0].status, "synced");
+  const restored = await createSync({ jobs, request, stateFile: path.join(root, "sync.json") });
+  const restoredCount = calls.length;
+  await restored.sync(job);
+  assert.equal(calls.length, restoredCount);
+  source.credentials.access_token = "FAKE_DUPLICATE";
+  accounts.push({ ...accounts[0], id: 13 });
+  await write();
+  await sync.sync(job);
+  assert.equal(sync.status()[0].status, "synced");
+  assert.equal(sync.status()[0].accountID, 12);
+  const unlinked = await createSync({ jobs, request, stateFile: path.join(root, "unlinked.json") });
+  await unlinked.sync(job);
+  assert.equal(unlinked.status()[0].status, "failed");
+  assert.match(unlinked.status()[0].error, /重复账号/);
+  source.credentials.email = "other@example.invalid";
+  await write();
+  const beforeMismatch = calls.length;
+  await sync.sync(job, true);
+  assert.equal(calls.length, beforeMismatch);
+  assert.equal(JSON.stringify(sync.status()).includes("FAKE_"), false);
+
+  process.env.CONSOLE_PASSWORD_FILE = path.join(root, "password");
+  process.env.CREDENTIAL_KEY_FILE = path.join(root, "key");
+  process.env.CREDENTIAL_ROOT = path.join(root, "credentials");
+  process.env.PUBLIC_ORIGIN = "https://test.example.invalid";
+  process.env.WEB_DIST = path.join(root, "web");
+  const password = crypto.randomBytes(24).toString("hex");
+  await fs.writeFile(process.env.CONSOLE_PASSWORD_FILE, password);
+  await fs.writeFile(process.env.CREDENTIAL_KEY_FILE, crypto.randomBytes(32).toString("hex"));
+  await fs.mkdir(process.env.WEB_DIST);
+  await fs.writeFile(path.join(process.env.WEB_DIST, "index.html"), "SAFE_PAGE");
+  const { authorize, serveStatic, createCredentialStore } = await import("./security.mjs");
+  const store = createCredentialStore();
+  await store.save(job.email, { password: "FAKE_PASSWORD", totpSecret: "FAKE_TOTP" });
+  assert.equal((await store.load(job.email)).password, "FAKE_PASSWORD");
+  const encryptedFile = path.join(process.env.CREDENTIAL_ROOT, (await fs.readdir(process.env.CREDENTIAL_ROOT))[0]);
+  assert.equal((await fs.readFile(encryptedFile, "utf8")).includes("FAKE_PASSWORD"), false);
+  assert.equal((await fs.stat(encryptedFile)).mode & 0o777, 0o600);
+  const encrypted = JSON.parse(await fs.readFile(encryptedFile, "utf8"));
+  encrypted.tag = "00".repeat(16);
+  await fs.writeFile(encryptedFile, JSON.stringify(encrypted));
+  await assert.rejects(store.load(job.email));
+  const server = http.createServer(async (req, res) => { if (authorize(req, res)) await serveStatic(req, res, new URL(req.url, "http://localhost").pathname); });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const headers = { Authorization: "Basic " + Buffer.from("admin:" + password).toString("base64") };
+    assert.equal((await fetch(base)).status, 401);
+    assert.equal(await (await fetch(base, { headers })).text(), "SAFE_PAGE");
+    assert.equal((await fetch(base + "/@fs/etc/passwd", { headers })).status, 404);
+    assert.equal((await fetch(base + "/data/jobs", { headers })).status, 404);
+    assert.equal((await fetch(base, { headers: { ...headers, Origin: "https://evil.invalid" } })).status, 403);
+  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+  console.log("PASS: create defaults, update without duplicates, preserve settings, retry, restart, reject identity mismatch, protect console/files, encrypt credentials");
+} finally { await fs.rm(root, { recursive: true, force: true }); }
