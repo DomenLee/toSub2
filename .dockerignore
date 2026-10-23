@@ -1,0 +1,8 @@
+.git
+node_modules
+tmp
+web/dist
+*.tar.gz
+*.env
+secrets
+data
