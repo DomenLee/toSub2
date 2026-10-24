@@ -9,7 +9,10 @@ export function accountNeedsReauth(job, item) {
 export function accountState(job, item) {
   if (!item) return { label: "状态待读取", kind: "pending", attention: false };
   if (item.deleting) return { label: "删除待处理", kind: "offline", attention: true };
-  if (item.status === "error") return { label: item.code === "binding_mismatch" ? "绑定待核对" : "读取失败", kind: "offline", attention: true };
+  if (item.status === "error") {
+    const labels = { binding_mismatch: "绑定待核对", legacy_workspace: "旧工作区待修复", workspace_missing: "工作区待确认", workspace_mismatch: "工作区不一致", email_mismatch: "邮箱不一致" };
+    return { label: labels[item.code] || "读取失败", kind: "offline", attention: true };
+  }
   if (item.status === "missing") return { label: "关联账号不存在", kind: "offline", attention: true };
   if (item.syncStatus === "failed") return { label: "同步失败", kind: "offline", attention: true };
   if (item.status === "unlinked") return { label: job.status === "completed" ? "待同步" : "待完成授权", kind: "pending", attention: false };

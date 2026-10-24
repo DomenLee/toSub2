@@ -1,8 +1,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
-import { normalizeAccount, workspaceOf } from "./identity.mjs";
+import { assertBinding, hasLegacyWorkspace, normalizeAccount, tokenWorkspaceOf, workspaceOf } from "./identity.mjs";
 
-export async function createSync({ jobs, request, stateFile = "/data/sync-state.json" }) {
+export async function createSync({ jobs, request, stateFile = "/data/sync-state.json", now = Date.now }) {
   let state = {};
   try { state = JSON.parse(await fs.readFile(stateFile, "utf8")); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
@@ -15,16 +15,39 @@ export async function createSync({ jobs, request, stateFile = "/data/sync-state.
   };
   const emailOf = account => String(account.credentials?.email || account.extra?.email || account.name || "").trim().toLowerCase();
 
+  async function verifyBinding(job, original, workspaceID, previous) {
+    const accountID = previous.accountID;
+    if (!Number.isSafeInteger(accountID) || accountID <= 0) throw new Error("历史同步记录缺少有效账号编号，请核对原账号后重新授权，禁止自动新增");
+    const binding = { accountID, email: job.email, workspace: workspaceID, allowLegacy: true };
+    const endpoint = `/api/v1/admin/accounts/${accountID}`;
+    let account = await request(endpoint);
+    if (!assertBinding(account, binding)) return false;
+    if (tokenWorkspaceOf(original) !== workspaceID) throw new Error(`账号 #${accountID}：旧版工作区缺少可信的授权令牌，未执行自动修复；请核对原账号后重新授权`);
+    if (previous.workspaceID !== workspaceID) throw new Error(`账号 #${accountID}：历史同步记录缺少可信工作区，未执行自动修复；请管理员核对并补齐原账号的绑定记录后重试`);
+    account = await request(endpoint);
+    if (!assertBinding(account, binding)) return false;
+    const result = await request("/api/v1/admin/accounts/bulk-update", {
+      method: "POST",
+      body: { account_ids: [accountID], credentials: { chatgpt_account_id: workspaceID }, extra: { account_id: workspaceID, chatgpt_account_id: workspaceID } },
+    });
+    if (result?.success !== 1 || result.failed !== 0 || !result.success_ids?.includes(accountID)) throw new Error(`账号 #${accountID}：工作区修复结果未确认，将重新读取并重试；请查看自动同步面板`);
+    account = await request(endpoint);
+    assertBinding(account, { ...binding, allowLegacy: false });
+    if ([account.credentials?.chatgpt_account_id, account.extra?.chatgpt_account_id, account.extra?.account_id].some(value => value !== workspaceID)) throw new Error(`账号 #${accountID}：工作区字段尚未完整更新，请在自动同步面板重试`);
+    return true;
+  }
+
   async function push(job, force) {
     if (job.deleted || state[job.id]?.deleting || job.status !== "completed" || !job.resultSaved) return;
     const previous = state[job.id];
-    if (!force && previous?.status === "failed" && Date.now() < previous.retryAt) return;
+    if (!force && previous?.status === "failed" && now() < previous.retryAt) return;
     let digest;
     try {
       const raw = await fs.readFile(job.outputPath, "utf8");
       const rawDigest = crypto.createHash("sha256").update(raw).digest("hex");
       digest = rawDigest;
-      if (previous?.status === "synced" && previous.digest === digest) return;
+      const bindingOnly = previous?.digest === digest;
+      if (bindingOnly && previous.status === "synced" && !force && now() < previous.bindingCheckedAt + 60000) return;
       const payload = JSON.parse(raw);
       const original = payload.accounts?.[0];
       if (payload.type !== "sub2api-data" || payload.accounts?.length !== 1 || original.platform !== "openai" || original.type !== "oauth" || emailOf(original) !== job.email.toLowerCase() || !original.credentials?.access_token || !original.credentials?.refresh_token) {
@@ -33,7 +56,13 @@ export async function createSync({ jobs, request, stateFile = "/data/sync-state.
       const source = normalizeAccount(original);
       const workspaceID = workspaceOf(source);
       if (previous?.accountID && previous.workspaceID && previous.workspaceID !== workspaceID) throw new Error("重新授权选择了不同工作区，请核对原账号，禁止覆盖或自动新增");
-      const legacyMatch = account => account.id === previous?.accountID && !workspaceOf(account) && (previous.workspaceID === workspaceID || previous.digest === rawDigest);
+      if (bindingOnly) {
+        const migrated = await verifyBinding(job, original, workspaceID, previous);
+        state[job.id] = { ...previous, status: "synced", error: undefined, retryAt: undefined, workspaceID, bindingCheckedAt: now(), updatedAt: migrated || previous.status !== "synced" ? new Date(now()).toISOString() : previous.updatedAt };
+        await save();
+        return;
+      }
+      const legacyMatch = account => account.id === previous?.accountID && hasLegacyWorkspace(account) && !workspaceOf(account) && tokenWorkspaceOf(original) === workspaceID && (previous.workspaceID === workspaceID || previous.digest === rawDigest);
       state[job.id] = { ...previous, email: job.email, status: "syncing", updatedAt: new Date().toISOString() };
       await save();
       const matches = [];
@@ -56,7 +85,7 @@ export async function createSync({ jobs, request, stateFile = "/data/sync-state.
       if (matches.length) {
         accountID = (linked || matches[0]).id;
         const existing = await request(`/api/v1/admin/accounts/${accountID}`);
-        if (existing.id !== accountID || emailOf(existing) !== job.email.toLowerCase() || (workspaceOf(existing) !== workspaceID && !legacyMatch(existing))) throw new Error("目标账号已变化，请核对后重试");
+        assertBinding(existing, { accountID, email: job.email, workspace: workspaceID, allowLegacy: legacyMatch(existing) || workspaceOf(existing) === workspaceID });
         if (previous?.resumeScheduling || (existing.status === "error" && /\b401\b/.test(existing.error_message || ""))) {
           state[job.id].resumeScheduling = true;
           await save();
@@ -72,9 +101,9 @@ export async function createSync({ jobs, request, stateFile = "/data/sync-state.
         if (!Number.isSafeInteger(created.id) || created.id <= 0) throw new Error("新增账号响应无有效编号，请核对本项目后重试");
         accountID = created.id;
       }
-      state[job.id] = { email: job.email, status: "synced", digest, accountID, workspaceID, updatedAt: new Date().toISOString() };
+      state[job.id] = { email: job.email, status: "synced", digest, accountID, workspaceID, bindingCheckedAt: now(), updatedAt: new Date(now()).toISOString() };
     } catch (error) {
-      state[job.id] = { ...state[job.id], email: job.email, status: "failed", error: error.message, retryAt: Date.now() + 60000, updatedAt: new Date().toISOString() };
+      state[job.id] = { ...state[job.id], email: job.email, status: "failed", error: error.message, retryAt: now() + 60000, updatedAt: new Date(now()).toISOString() };
     }
     await save();
   }

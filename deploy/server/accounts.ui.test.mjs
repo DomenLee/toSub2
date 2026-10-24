@@ -20,6 +20,7 @@ export async function testUI(directory) {
   dom.window.clearTimeout = timer => { scheduledRefreshes.delete(timer); cancelTimer(timer); };
   let statsFail = false;
   let accountMode = "ready";
+  let accountCode = "binding_mismatch";
   const linkedRequests = [];
   let clipboardText = "";
   let finishBatch;
@@ -38,7 +39,7 @@ export async function testUI(directory) {
     }
     else if (endpoint === "/api/linked-accounts") {
       linkedRequests.push({ body, signal: options.signal });
-      result = { items: body.ids.map(id => ({ id, email: jobs.find(job => job.id === id)?.email, accountID: id.endsWith("1") ? 42 : 43, status: accountMode, code: accountMode === "error" ? "binding_mismatch" : undefined, error: accountMode === "error" ? "工作区不一致，请核对绑定后刷新。" : "", accountStatus: "active", schedulable: true, reauthRequired: false, quota: { total: 100, used: 12.5 }, groups: [{ id: 7, name: "Test Pool" }], userCost: statsFail ? null : 12.345678, statsError: statsFail ? "累计扣费读取失败，请点击刷新重试" : "" })) };
+      result = { items: body.ids.map(id => ({ id, email: jobs.find(job => job.id === id)?.email, accountID: id.endsWith("1") ? 42 : 43, status: accountMode, code: accountMode === "error" ? accountCode : undefined, error: accountMode === "error" ? accountCode === "legacy_workspace" ? "旧版会话标识 authsess_，请在自动同步面板查看结果或立即重试。" : "工作区不一致，请核对绑定后刷新。" : "", accountStatus: "active", schedulable: true, reauthRequired: false, quota: { total: 100, used: 12.5 }, groups: [{ id: 7, name: "Test Pool" }], userCost: statsFail ? null : 12.345678, statsError: statsFail ? "累计扣费读取失败，请点击刷新重试" : "" })) };
     }
     else if (endpoint === "/api/jobs/delete-batch") {
       deletedRequests.push(body);
@@ -145,6 +146,24 @@ export async function testUI(directory) {
     assert.doesNotMatch(document.querySelector(".account-health").textContent, /未关联/);
     assert.match(document.querySelector('[aria-label="账号概览"]').textContent, /需要处理2/);
     assert.match(document.querySelector(".sync-panel").textContent, /2 个账号需处理/);
+    accountCode = "legacy_workspace";
+    document.querySelector(".account-summary-refresh").click();
+    await until(() => document.querySelector(".account-health").textContent.includes("旧工作区待修复"));
+    button("账号详情").click();
+    await until(() => document.querySelector('[role="dialog"]')?.textContent.includes("authsess_"));
+    assert.match(document.querySelector('[role="dialog"]').textContent, /alpha@example.invalid.*账号 #42/s);
+    assert.match(document.querySelector('[role="dialog"]').textContent, /自动同步面板/);
+    button("关闭").click();
+    await until(() => !document.querySelector('[role="dialog"]'));
+    document.querySelector('input[aria-label="选择 alpha@example.invalid"]').click();
+    button("批量删除").click();
+    await until(() => document.querySelector('[role="dialog"]')?.textContent.includes("authsess_"));
+    document.querySelector('[role="dialog"] input[type="checkbox"]').click();
+    await until(() => button("删除任务及关联账号")?.disabled);
+    assert.equal(deletedRequests.length, 0, "legacy workspace must block linked deletion");
+    button("关闭").click();
+    await until(() => !document.querySelector('[role="dialog"]'));
+    button("清除选择").click();
     accountMode = "ready";
     document.querySelector(".account-summary-refresh").click();
     await until(() => document.querySelector(".account-health").textContent.includes("需重新授权"));
