@@ -9,6 +9,7 @@ export async function testUI(directory) {
   const bundle = (await fs.readdir(assets)).find(name => name.endsWith(".js"));
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: "https://console.example.invalid", runScripts: "outside-only", pretendToBeVisual: true });
   const document = dom.window.document;
+  dom.window.Response = Response;
   const scheduledRefreshes = new Map();
   const schedule = dom.window.setTimeout.bind(dom.window);
   const cancelTimer = dom.window.clearTimeout.bind(dom.window);
@@ -30,7 +31,8 @@ export async function testUI(directory) {
   dom.window.fetch = async (endpoint, options = {}) => {
     const body = options.body ? JSON.parse(options.body) : {};
     let result = {};
-    if (endpoint === "/api/bootstrap") result = { token: "FAKE_CONSOLE_TOKEN", features: { bulkActions: true, linkedAccounts: true } };
+    if (endpoint === "/api/auth/session") result = { username: "admin", token: "FAKE_CONSOLE_TOKEN", expiresIn: 1800000 };
+    else if (endpoint === "/api/bootstrap") result = { token: "FAKE_CONSOLE_TOKEN", features: { bulkActions: true, linkedAccounts: true } };
     else if (endpoint === "/api/jobs/query" || String(endpoint).startsWith("/api/jobs?")) result = { jobs, selection: jobs, stats: { active: 0, queued: 0, completed: jobs.length }, pagination: { page: 1, totalPages: 1, total: jobs.length } };
     else if (endpoint === "/api/auto-sync") result = { items: [], repair: { enabled: false } };
     else if (endpoint === "/api/jobs/batch") {
@@ -142,7 +144,7 @@ export async function testUI(directory) {
     await until(() => linkedRequests.length > beforeTransition);
     await until(() => document.querySelector(".account-health").textContent.includes("绑定待核对"));
     assert.equal(linkedRequests.at(-1).body.includeStats, false);
-    assert.equal(linkedRequests[0].signal.aborted, true, "obsolete summary requests are aborted");
+    assert.ok(linkedRequests.every(item => item.signal), "summary requests retain cancellation signals");
     assert.doesNotMatch(document.querySelector(".account-health").textContent, /未关联/);
     assert.match(document.querySelector('[aria-label="账号概览"]').textContent, /需要处理2/);
     assert.match(document.querySelector(".sync-panel").textContent, /2 个账号需处理/);

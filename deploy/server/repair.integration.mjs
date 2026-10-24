@@ -18,7 +18,7 @@ let child;
 let childOutput = "";
 let resolveExit;
 let childExit;
-const password = crypto.randomBytes(24).toString("hex");
+const password = crypto.randomBytes(6).toString("hex");
 process.env.CONSOLE_PASSWORD_FILE = "/data/console-password";
 process.env.CREDENTIAL_KEY_FILE = "/data/credential-key";
 process.env.SUB2API_KEY_FILE = "/data/sub2api-key";
@@ -68,7 +68,7 @@ const upstream = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ code: 0, data }));
 });
 await new Promise(resolve => upstream.listen(8080, "127.0.0.1", resolve));
-const headers = { Authorization: "Basic " + Buffer.from(`admin:${password}`).toString("base64") };
+const headers = { Origin: process.env.PUBLIC_ORIGIN, "content-type": "application/json" };
 const base = "http://127.0.0.1:4399";
 async function start() {
   childExit = new Promise(resolve => { resolveExit = resolve; });
@@ -77,8 +77,9 @@ async function start() {
   child.stdout.on("data", chunk => { childOutput += chunk; });
   child.stderr.on("data", chunk => { childOutput += chunk; });
   await until(async () => {
-    const response = await fetch(base + "/api/bootstrap", { headers });
+    const response = await fetch(base + "/api/auth/login", { method: "POST", headers, body: JSON.stringify({ username: "admin", password }) });
     if (!response.ok) return false;
+    headers.Cookie = response.headers.get("set-cookie").split(";")[0];
     headers["x-console-token"] = (await response.json()).token;
     return true;
   });
