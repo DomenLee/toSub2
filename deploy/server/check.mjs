@@ -14,7 +14,7 @@ try {
   for (const name of ["src", "web", "package.json"]) await fs.cp(path.join(root, name), path.join(temporary, name), { recursive: true });
   await fs.symlink(path.join(root, "node_modules"), path.join(temporary, "node_modules"), "junction");
   execFileSync(process.execPath, [path.join(root, "deploy/server/patch.mjs"), temporary], { stdio: "inherit" });
-  for (const [source, target] of [["security.mjs", "src/server-security.mjs"], ["sync.mjs", "src/server-sync.mjs"], ["repair.mjs", "src/server-repair.mjs"], ["identity.mjs", "src/identity.mjs"], ["accounts.mjs", "src/server-accounts.mjs"], ["SyncPanel.jsx", "web/src/SyncPanel.jsx"], ["Accounts.jsx", "web/src/Accounts.jsx"]]) await fs.copyFile(path.join(root, "deploy/server", source), path.join(temporary, target));
+  for (const [source, target] of [["security.mjs", "src/server-security.mjs"], ["sync.mjs", "src/server-sync.mjs"], ["repair.mjs", "src/server-repair.mjs"], ["identity.mjs", "src/identity.mjs"], ["accounts.mjs", "src/server-accounts.mjs"], ["SyncPanel.jsx", "web/src/SyncPanel.jsx"], ["SyncPanel.css", "web/src/SyncPanel.css"], ["Accounts.jsx", "web/src/Accounts.jsx"]]) await fs.copyFile(path.join(root, "deploy/server", source), path.join(temporary, target));
   for (const file of ["console-server.mjs", "server-accounts.mjs", "server-sync.mjs", "server-repair.mjs", "protocol-login.mjs"]) execFileSync(process.execPath, ["--check", path.join(temporary, "src", file)], { stdio: "inherit" });
   await build({ root: path.join(temporary, "web"), configFile: false, plugins: [react()] });
   await testUI(temporary);
