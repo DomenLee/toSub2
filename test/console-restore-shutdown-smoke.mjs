@@ -14,6 +14,12 @@ const expectedRestoredPasswordAddError = ["darwin", "win32"].includes(process.pl
 const expectedRestoredPasswordPrompt = expectedRestoredPasswordAddError
   ? "原授权文件仍可下载，新密码需要重试恢复"
   : "已恢复成功添加的新密码，可以继续未完成的 Codex 授权";
+const expectedRestoredTotpSetupError = ["darwin", "win32"].includes(process.platform)
+  ? null
+  : "2FA 已激活，但当前系统不支持持久凭据存储；结果文件已保留";
+const expectedRestoredTotpPrompt = expectedRestoredTotpSetupError
+  ? "原授权文件仍可下载，2FA 密钥需要重试恢复"
+  : "已恢复成功激活的 2FA 密钥，可以继续未完成的 Codex 授权";
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "tosub2-restore-"));
 const outputRoot = path.join(tempRoot, "output");
 const restoredId = "11111111-1111-4111-8111-111111111111";
@@ -187,9 +193,13 @@ try {
   assert.equal(recoveredTotp.hasTotpKey, true);
   assert.equal(recoveredTotp.canSetupTotp, false);
   assert.equal(recoveredTotp.canRetry, true);
-  assert.equal(recoveredTotp.totpSetupError, null);
-  assert.match(recoveredTotp.prompt, /已恢复成功激活的 2FA 密钥/);
-  await assert.rejects(fs.access(path.join(interruptedTotpDir, "totp-setup-result.json")));
+  assert.equal(recoveredTotp.totpSetupError, expectedRestoredTotpSetupError);
+  assert.equal(recoveredTotp.prompt, expectedRestoredTotpPrompt);
+  if (expectedRestoredTotpSetupError) {
+    await fs.access(path.join(interruptedTotpDir, "totp-setup-result.json"));
+  } else {
+    await assert.rejects(fs.access(path.join(interruptedTotpDir, "totp-setup-result.json")));
+  }
 
   const createResponse = await fetch(`${baseUrl}/api/jobs`, {
     method: "POST",
