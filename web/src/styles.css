@@ -349,7 +349,7 @@ tbody tr:last-child td { border-bottom: 0; }
 }
 .account-details { min-width: 0; }
 .account-details { flex: 1 1 auto; }
-.account-cell strong { display: block; color: var(--ink); font-size: 13px; line-height: 1.35; overflow-wrap: anywhere; word-break: break-word; }
+.account-cell strong { display: block; overflow: hidden; text-overflow: ellipsis; color: var(--ink); font-size: 13px; line-height: 1.35; white-space: nowrap; }
 .account-cell span { display: block; margin-top: 4px; color: #8a9490; font-size: 11px; }
 .account-health { margin-top: 6px; display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 .account-health-pill, .account-quota-chip, .account-health-pending {
@@ -1048,7 +1048,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .table-frame .job-row td[data-label="开始时间"]::before,
   .table-frame .job-row td[data-label="最近操作"]::before,
   .table-frame .job-row td[data-label="操作"]::before { content: attr(data-label); display: block; margin-bottom: 4px; color: #8a9691; font-size: 10px; font-weight: 700; }
-  .table-frame .job-row .account-cell strong { white-space: normal; overflow-wrap: anywhere; }
+  .table-frame .job-row .account-cell strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .table-frame .job-row .account-collapse-toggle {
     min-height: 26px;
     margin-top: 7px;
