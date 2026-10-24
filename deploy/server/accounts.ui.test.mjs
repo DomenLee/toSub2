@@ -36,6 +36,11 @@ export async function testUI(directory) {
   const button = text => [...document.querySelectorAll("button")].find(item => item.textContent.trim() === text);
   try {
     dom.window.eval(await fs.readFile(path.join(assets, bundle), "utf8"));
+    await until(() => button("批量添加任务"));
+    assert.equal(button("添加任务"), undefined, "single task creation must stay hidden");
+    assert.equal(button("筛选账号"), undefined, "email filter entry must stay hidden");
+    assert.equal(document.querySelector('[aria-label="接码平台配置"]'), null, "SMS provider toolbar must stay hidden");
+    assert.equal(document.querySelector('[aria-label="邮件接码请求配置"]'), null, "mail API toolbar must stay hidden");
     await until(() => button("分组 / 累计扣费"));
     button("分组 / 累计扣费").click();
     await until(() => document.querySelector('[role="dialog"]')?.textContent.includes("12.345678"));

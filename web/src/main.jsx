@@ -719,70 +719,14 @@ function App() {
             <h2>授权任务</h2>
             <p>{emailFilter.length
               ? `匹配 ${pagination.total} 条，共 ${pagination.totalAll ?? pagination.total} 条任务`
-              : (pagination.total ? `共 ${pagination.total} 条任务` : "添加邮箱后开始第一条任务")}</p>
+              : (pagination.total ? `共 ${pagination.total} 条任务` : "使用批量添加任务导入账号")}</p>
           </div>
-          <form className="add-form" onSubmit={createJob}>
-            <div className="email-field">
-              <Mail size={17} aria-hidden="true" />
-              <input
-                type="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder="输入邮箱地址"
-                autoComplete="email"
-                aria-label="邮箱地址"
-                required
-              />
-            </div>
-            <button className="primary-button" type="submit" disabled={!token || busy}>
-              {busy ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />}
-              添加任务
-            </button>
-            <button className="secondary-button" type="button" onClick={() => { setBatchError(""); setBatchOpen(true); }} disabled={!token}>
+          <div className="add-form batch-only-form">
+            <button className="primary-button batch-add-button" type="button" onClick={() => { setBatchError(""); setBatchOpen(true); }} disabled={!token}>
               <ListPlus size={17} />
-              批量添加
+              批量添加任务
             </button>
-            <button
-              className={`secondary-button ${emailFilter.length ? "filter-active" : ""}`}
-              type="button"
-              onClick={() => { setFilterError(""); setFilterText(emailFilter.join("\n")); setFilterOpen(true); }}
-              disabled={!token}
-            >
-              <Filter size={17} />
-              {emailFilter.length ? `筛选 ${emailFilter.length}` : "筛选账号"}
-            </button>
-            {emailFilter.length > 0 && (
-              <button className="selection-text-button clear-filter-button" type="button" onClick={clearEmailFilter}>
-                清除筛选
-              </button>
-            )}
-          </form>
-        </div>
-
-        <div className="provider-toolbar sms-provider-toolbar" aria-label="接码平台配置">
-          <div className="provider-heading"><PhoneIncoming size={17} /><strong>接码平台</strong></div>
-          <span className="provider-name">{activeSmsProvider.name || "未选择"}</span>
-          <span className={`provider-ready ${activeSmsProvider.ready ? "" : "incomplete"}`}>
-            {activeSmsProvider.ready ? <Check size={14} /> : <CircleAlert size={14} />}
-            {activeSmsProvider.ready
-              ? (activeSmsProvider.summary ? `已配置 · ${activeSmsProvider.summary}` : "已配置")
-              : "未完成配置"}
-          </span>
-          <button type="button" className="secondary-button provider-settings-button" onClick={openSmsSettings} disabled={!smsProviderDefinitions.length}>
-            <Settings2 size={16} />配置
-          </button>
-        </div>
-
-        <div className="provider-toolbar mail-request-toolbar" aria-label="邮件接码请求配置">
-          <div className="provider-heading"><MailCheck size={17} /><strong>邮件 API</strong></div>
-          <span className="provider-name">{mailRequestSettings.method}</span>
-          <span className="provider-ready">
-            <Check size={14} />
-            {formatMailRequestSummary(mailRequestSettings)}
-          </span>
-          <button type="button" className="secondary-button provider-settings-button" onClick={openMailRequestSettings} disabled={!token}>
-            <Settings2 size={16} />配置
-          </button>
+          </div>
         </div>
 
         <div className="provider-toolbar sub2api-toolbar" aria-label="Sub2API 配置与号池监控">
@@ -1396,7 +1340,7 @@ function App() {
           <form className="batch-dialog" onSubmit={createBatch} role="dialog" aria-modal="true" aria-labelledby="batch-title">
             <div className="dialog-header">
               <div>
-                <h2 id="batch-title">批量添加账号</h2>
+                <h2 id="batch-title">批量添加任务</h2>
                 <span>{countBatchLines(batchText)} 条，超出并发上限后自动排队</span>
               </div>
               <button type="button" className="icon-button" onClick={() => setBatchOpen(false)} disabled={batchBusy} title="关闭">
@@ -1631,7 +1575,7 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
 
   return (
     <tr className={`job-row status-${job.status}`}>
-      <td className="select-cell">
+      <td className="select-cell" data-label="选择">
         <input
           type="checkbox"
           checked={selected}
@@ -1640,15 +1584,15 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
           aria-label={`选择 ${job.email}`}
         />
       </td>
-      <td>
+      <td data-label="账号">
         <div className="account-cell">
           <div className="account-avatar">{job.email.slice(0, 1).toUpperCase()}</div>
           <div className="account-details"><strong>{job.email}</strong><span>{shortId(job.id)}</span></div>
           <LoginMethodBadge job={job} />
         </div>
       </td>
-      <td><StatusBadge status={job.status} /></td>
-      <td className="step-cell">
+      <td data-label="状态"><StatusBadge status={job.status} /></td>
+      <td className="step-cell" data-label="当前操作">
         <div className="prompt-line">{job.prompt}</div>
         {job.lastError && <div className="row-error">{extractResponseMessage(job.lastError)}</div>}
         {job.autoRepairBlocked && (
@@ -1735,12 +1679,12 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
           </div>
         )}
       </td>
-      <td className="time-cell"><time dateTime={job.createdAt}>{formatDateTime(job.createdAt)}</time></td>
-      <td className="operation-time-cell">
+      <td className="time-cell" data-label="开始时间"><time dateTime={job.createdAt}>{formatDateTime(job.createdAt)}</time></td>
+      <td className="operation-time-cell" data-label="最近操作">
         <time dateTime={job.lastOperationAt || job.createdAt}>{formatDateTime(job.lastOperationAt || job.createdAt)}</time>
         <span>{operationLabel(job.lastOperationType)}</span>
       </td>
-      <td>
+      <td className="actions-cell" data-label="操作">
         <div className="row-actions">
           {job.canDownload && (
             <button type="button" className="download-button" onClick={download}>
