@@ -12,6 +12,7 @@ const accounts = new Map();
 const deleted = [];
 let migrations = 0;
 let failDelete = true;
+let usageProbes = 0;
 const password = crypto.randomBytes(6).toString("hex");
 process.env.CONSOLE_PASSWORD_FILE = "/data/console-password";
 process.env.CREDENTIAL_KEY_FILE = "/data/credential-key";
@@ -46,6 +47,14 @@ const upstream = http.createServer(async (req, res) => {
   if (url.pathname === "/api/v1/admin/usage/stats") {
     assert.equal(url.searchParams.get("start_date"), "1970-01-01");
     data = { total_actual_cost: 12.345678 };
+  } else if (url.pathname === "/api/v1/admin/accounts/42/usage" && req.method === "GET") {
+    usageProbes++;
+    assert.equal(url.searchParams.has("force"), false);
+    accounts.get(42).extra = { ...accounts.get(42).extra, codex_usage_updated_at: new Date().toISOString(), codex_5h_used_percent: 30, codex_7d_used_percent: 70, codex_5h_reset_at: new Date(Date.now() + 3600000).toISOString(), codex_7d_reset_at: new Date(Date.now() + 86400000).toISOString() };
+    data = {};
+  } else if (url.pathname === "/api/v1/admin/dashboard/trend" && req.method === "GET") {
+    assert.equal(url.searchParams.get("group_id"), "7");
+    data = { trend: [{ date: url.searchParams.get("end_date"), requests: 3, total_tokens: 400, actual_cost: 0.5 }] };
   } else if (match && req.method === "GET") {
     data = accounts.get(Number(match[1]));
     if (!data) { res.writeHead(404).end(); return; }
@@ -141,6 +150,18 @@ try {
   assert.equal(detail.items[0].quota.used, null);
   assert.equal(detail.items[0].schedulable, true);
   assert.equal(JSON.stringify(detail).includes("FAKE_"), false);
+  assert.equal(detail.items[0].usage.fiveHour.state, "missing");
+  assert.equal((await fetch(base + "/api/account-usage/refresh", { method: "POST" })).status, 401);
+  const usage = await post("/api/account-usage/refresh", { ids: [definitions[0].id] });
+  assert.equal(usage.item.usage.fiveHour.remaining, 70);
+  assert.equal(usage.item.usage.sevenDay.remaining, 30);
+  assert.equal(usage.error, null);
+  assert.match((await post("/api/account-usage/refresh", { ids: [definitions[0].id] })).error, /冷却/);
+  assert.equal(usageProbes, 1);
+  const trend = await post("/api/group-usage/trend", { ids: [definitions[0].id], groupID: 7 });
+  assert.equal(trend.points.length, 7);
+  assert.equal(trend.points.reduce((sum, point) => sum + point.requests, 0), 3);
+  assert.equal((await fetch(base + "/api/group-usage/trend", { method: "POST", headers, body: JSON.stringify({ ids: [definitions[0].id], groupID: 99 }) })).status, 409);
   const partial = await post("/api/jobs/delete-batch", { ids: definitions.slice(0, 2).map(item => item.id), deleteLinkedAccounts: true, links: detail.items });
   assert.equal(partial.deleted, 1);
   assert.equal(partial.failed, 1);
