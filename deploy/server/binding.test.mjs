@@ -79,7 +79,7 @@ try {
     const retry = await fixture({ mode });
     await retry.sync.sync(retry.job);
     assert.equal(retry.sync.status()[0].status, "failed", mode);
-    assert.equal(JSON.parse(await fs.readFile(retry.stateFile, "utf8"))[retry.job.id].syncedDigest, retry.digest);
+    assert.equal(JSON.parse(await fs.readFile(retry.stateFile, "utf8"))[retry.job.id].digest, retry.digest);
     const failedCount = retry.calls.length;
     await retry.sync.sync(retry.job);
     assert.equal(retry.calls.length, failedCount, "failed checks respect backoff");
@@ -90,6 +90,11 @@ try {
     assert.equal(writes(retry).length, ["timeout", "bad-result"].includes(mode) ? 1 : 2, mode);
     checkPreserved(retry);
   }
+
+  const failed = await fixture({ stateChanges: { status: "failed", error: "old read failure", retryAt: 0 } });
+  await failed.sync.sync(failed.job, true);
+  assert.equal(failed.sync.status()[0].status, "synced", "historical failures retain the last successful digest and must not replay its tokens");
+  checkPreserved(failed);
 
   for (const changes of [
     { stateChanges: { workspaceID: undefined } },

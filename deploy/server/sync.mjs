@@ -43,14 +43,10 @@ export async function createSync({ jobs, request, stateFile = "/data/sync-state.
     if (!force && previous?.status === "failed" && now() < previous.retryAt) return;
     let digest;
     try {
-      if (previous?.status === "synced" && previous.digest && !previous.syncedDigest) {
-        previous.syncedDigest = previous.digest;
-        await save();
-      }
       const raw = await fs.readFile(job.outputPath, "utf8");
       const rawDigest = crypto.createHash("sha256").update(raw).digest("hex");
       digest = rawDigest;
-      const bindingOnly = previous?.syncedDigest === digest;
+      const bindingOnly = previous?.digest === digest;
       if (bindingOnly && previous.status === "synced" && !force && now() < previous.bindingCheckedAt + 60000) return;
       const payload = JSON.parse(raw);
       const original = payload.accounts?.[0];
@@ -105,7 +101,7 @@ export async function createSync({ jobs, request, stateFile = "/data/sync-state.
         if (!Number.isSafeInteger(created.id) || created.id <= 0) throw new Error("新增账号响应无有效编号，请核对本项目后重试");
         accountID = created.id;
       }
-      state[job.id] = { email: job.email, status: "synced", digest, syncedDigest: digest, accountID, workspaceID, bindingCheckedAt: now(), updatedAt: new Date(now()).toISOString() };
+      state[job.id] = { email: job.email, status: "synced", digest, accountID, workspaceID, bindingCheckedAt: now(), updatedAt: new Date(now()).toISOString() };
     } catch (error) {
       state[job.id] = { ...state[job.id], email: job.email, status: "failed", error: error.message, retryAt: now() + 60000, updatedAt: new Date(now()).toISOString() };
     }
