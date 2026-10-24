@@ -146,7 +146,7 @@ export async function createRequest() {
   return async (endpoint, options = {}) => {
     let response;
     try {
-      response = await fetch(base + endpoint, { method: options.method || "GET", body: options.body ? JSON.stringify(options.body) : undefined, headers: { "content-type": "application/json", "x-api-key": key, ...options.headers }, signal: AbortSignal.timeout(30000), redirect: "error" });
+      response = await fetch(base + endpoint, { method: options.method || "GET", body: options.body ? JSON.stringify(options.body) : undefined, headers: { "content-type": "application/json", "x-api-key": key, ...options.headers }, signal: AbortSignal.timeout(options.timeoutMs || 30000), redirect: "error" });
     } catch { throw new Error("本项目接口连接失败，将自动重试，也可点击立即重试"); }
     if (!response.ok) {
       const error = new Error(`本项目接口返回 HTTP ${response.status}，请检查集成权限和账号后重试`);

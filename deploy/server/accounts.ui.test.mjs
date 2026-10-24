@@ -125,9 +125,9 @@ export async function testUI(directory) {
     await until(() => firstJobRow.classList.contains("mobile-collapsed"));
     await until(() => button("账号详情"));
     assert.match(document.querySelector('[aria-label="账号概览"]').textContent, /当前在线2/);
-    assert.match(document.querySelector('[aria-label="账号概览"]').textContent, /配置额度已用\$25\.00/);
-    assert.match(document.querySelector('[aria-label="账号概览"]').textContent, /覆盖 2\/2/);
-    assert.match(document.querySelector('[aria-label="账号概览"]').textContent, /OAuth 订阅额度未提供/);
+    assert.match(document.querySelector('[aria-label="账号概览"]').textContent, /额度可用账号待采集/);
+    assert.match(document.querySelector('[aria-label="账号概览"]').textContent, /已核实 0\/2/);
+    assert.match(document.querySelector('[aria-label="账号概览"]').textContent, /过期请在账号详情更新/);
     await until(() => scheduledRefreshes.size === 1);
     const [timer, callback] = [...scheduledRefreshes][0];
     dom.window.clearTimeout(timer);

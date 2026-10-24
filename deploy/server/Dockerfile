@@ -9,6 +9,7 @@ COPY deploy/server ./deploy/server
 RUN node deploy/server/patch.mjs .
 RUN cp deploy/server/security.mjs src/server-security.mjs && cp deploy/server/sync.mjs src/server-sync.mjs && cp deploy/server/repair.mjs src/server-repair.mjs && cp deploy/server/identity.mjs src/identity.mjs && cp deploy/server/SyncPanel.jsx web/src/SyncPanel.jsx && cp deploy/server/SyncPanel.css web/src/SyncPanel.css
 RUN cp deploy/server/accounts.mjs src/server-accounts.mjs && cp deploy/server/Accounts.jsx web/src/Accounts.jsx
+RUN cp deploy/server/usage.mjs src/usage.mjs && cp deploy/server/Usage.jsx deploy/server/Usage.css web/src/
 RUN cp deploy/server/auth.mjs src/auth.mjs && cp deploy/server/Auth.jsx deploy/server/Auth.css deploy/server/session.js web/src/
 RUN node --input-type=module -e 'import {build} from "vite";import react from "@vitejs/plugin-react";await build({root:"web",plugins:[react()]});'
 RUN node --input-type=module -e 'import fs from "node:fs";const pkg=JSON.parse(fs.readFileSync("package.json"));for(const name of ["vite","@vitejs/plugin-react","react","react-dom","lucide-react"])delete pkg.dependencies[name];fs.writeFileSync("package.json",JSON.stringify(pkg));' && npm prune --omit=dev --ignore-scripts --no-audit --no-fund

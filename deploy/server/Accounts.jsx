@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import Modal from "./Dialog.jsx";
 import { accountIsOnline, accountState } from "./account-state.js";
 import { sessionFetch as fetch } from "./session.js";
+import { AccountUsage, UsageWindows } from "./Usage.jsx";
 
 async function request(token, endpoint, body, signal) {
   const response = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json", "x-console-token": token }, body: JSON.stringify(body), signal });
@@ -10,7 +11,7 @@ async function request(token, endpoint, body, signal) {
   return result;
 }
 
-function Summary({ item }) {
+function Summary({ item, children }) {
   const online = accountIsOnline(item);
   const state = accountState({}, item);
   const needsReauth = item.reauthRequired === true;
@@ -22,10 +23,10 @@ function Summary({ item }) {
       <div className="linked-account-detail-grid">
         <div><span>当前状态（可调度）</span><strong className={online ? "online" : "offline"}>{state.label}</strong></div>
         <div><span>重新授权</span><strong className={needsReauth ? "reauth" : "authorized"}>{needsReauth ? "需要重新授权" : "授权正常"}</strong></div>
-        <div><span>配置总额度</span><strong>{quota.supported === false ? "OAuth 不适用" : quota.total === 0 ? "不限额" : quotaAmount(quota.total)}</strong></div>
-        <div><span>配置额度已用</span><strong>{quota.supported === false ? "OAuth 不适用" : quotaAmount(quota.used)}</strong></div>
+        {quota.supported !== false && <><div><span>配置总额度</span><strong>{quota.total === 0 ? "不限额" : quotaAmount(quota.total)}</strong></div>
+        <div><span>配置额度已用</span><strong>{quotaAmount(quota.used)}</strong></div></>}
       </div>
-      <p className="account-summary-note">当前接口未提供 OAuth 订阅总额度或已用额度，无法计算剩余额度。</p>
+      {children || <UsageWindows item={item} />}
       <div style={{ marginTop: 6 }}>所属分组：{item.groups.length ? item.groups.map(group => `${group.name}（#${group.id}）`).join("、") : "未加入分组"}</div>
       <div>用户累计扣费：{item.userCost === null || item.userCost === undefined ? "暂不可用" : `$${item.userCost.toFixed(6)}`}</div>
       <small>统计本账号现存历史用量日志的用户实际扣费，与订阅额度、账号成本不同；不包含已清理的日志和影子账号用量。</small>
@@ -60,7 +61,7 @@ export function LinkedAccount({ token, job }) {
     {open && <Modal title="关联账号详情" onClose={() => setOpen(false)}>
       {loading && <p role="status">正在读取 {job.email} 的关联账号…</p>}
       {error && <p className="dialog-error" role="alert">{error}</p>}
-      {!loading && !error && item && <Summary item={item} />}
+      {!loading && !error && item && <Summary item={item}><AccountUsage token={token} job={job} item={item} onChange={next => setItem(current => ({ ...current, ...next }))} /></Summary>}
       <div className="dialog-footer"><button type="button" className="primary-button" disabled={loading} onClick={() => setRevision(current => current + 1)}>刷新</button></div>
     </Modal>}
   </>;

@@ -125,3 +125,21 @@ await replace("web/src/main.jsx", "    </main>\n  );\n}\n\nfunction EmptyState",
 
 function EmptyState`);
 await replace("web/src/main.jsx", "              <LoginMethodBadge job={job} />", "              <LoginMethodBadge job={job} />\n              <LinkedAccount token={token} job={job} />");
+
+await replace("src/console-server.mjs", '  if (req.method === "POST" && requestUrl.pathname === "/api/linked-accounts") {', `  if (req.method === "POST" && ["/api/account-usage/refresh", "/api/group-usage/trend"].includes(requestUrl.pathname)) {
+    const body = await readJson(req);
+    const selected = resolveSelectedJobs(body.ids);
+    if (selected.length !== 1) throw httpError(400, "请选择一个有效账号后重试");
+    const result = requestUrl.pathname === "/api/account-usage/refresh"
+      ? await linkedAccounts.refreshUsage(selected[0])
+      : await linkedAccounts.trend(selected[0], body.groupID);
+    sendJson(res, 200, result);
+    return;
+  }
+  if (req.method === "POST" && requestUrl.pathname === "/api/linked-accounts") {`);
+await replace("src/console-server.mjs", "        linkedAccounts: true,", "        linkedAccounts: true,\n        usageInsights: true,");
+await replace("web/src/main.jsx", 'import SyncPanel from "./SyncPanel.jsx";', 'import SyncPanel from "./SyncPanel.jsx";\nimport { UsageMetrics, UsagePanel } from "./Usage.jsx";');
+await replace("web/src/main.jsx", '        <div className="quota-metric"><span>配置总额度</span><strong>{totalQuota.text}</strong>{totalQuota.count > 0 && <small>覆盖 {totalQuota.count}/{jobs.length} 个账号</small>}</div>\n        <div className="quota-metric"><span>配置额度已用</span><strong>{usedQuota.text}</strong>{usedQuota.count > 0 && <small>覆盖 {usedQuota.count}/{jobs.length} 个账号</small>}</div>', '        <UsageMetrics items={items.map(({ item }) => item)} />');
+await replace("web/src/main.jsx", 'OAuth 订阅额度未提供；累计扣费见账号详情。在线指账号可调度。', '额度仅统计 15 分钟内且未过重置时间的快照；缺失或过期请在账号详情更新。在线指账号可调度。');
+await replace("web/src/main.jsx", '            onRefresh={refreshLinkedAccounts}\n          />\n        )}', '            onRefresh={refreshLinkedAccounts}\n          />\n        )}\n        {features.linkedAccounts && jobSelectionIndex.length > 0 && <UsagePanel token={token} items={jobSelectionIndex.map(job => linkedAccountDetails[job.id]).filter(Boolean)} />}');
+await replace("web/src/main.jsx", '    const refresh = async () => {\n      setLinkedAccountLoading(true);', '    const refresh = async () => {\n      if (document.visibilityState === "hidden") { timer = window.setTimeout(refresh, 15_000); return; }\n      setLinkedAccountLoading(true);');

@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import { assertBinding, workspaceOf } from "./identity.mjs";
+import { createUsage, usageOf } from "./usage.mjs";
 
 const terminal = new Set(["completed", "failed", "canceled", "reauth_required", "resume_available"]);
 const emailOf = account => String(account?.credentials?.email || account?.extra?.email || account?.name || "").trim().toLowerCase();
@@ -35,13 +36,15 @@ function groupsOf(account) {
   return [...names].filter(([id]) => Number.isSafeInteger(id) && id > 0).map(([id, name]) => ({ id, name }));
 }
 
-export function createAccounts({ jobs, sync, request, lock, removeLocal, now = () => new Date() }) {
+export function createAccounts({ jobs, sync, request, lock, removeLocal, now = () => new Date(), usageStateFile }) {
+  const usage = createUsage({ request, inspect, now: () => now().getTime(), stateFile: usageStateFile });
   function binding(job) {
     const item = sync.status().find(entry => entry.id === job.id);
     return Number.isSafeInteger(item?.accountID) && item.accountID > 0 ? item.accountID : null;
   }
 
   async function inspect(job) {
+    if (jobs.get(job.id) !== job || job.deleted) throw new Error("任务已变化，请刷新列表后重试");
     const accountID = binding(job);
     const entry = sync.status().find(item => item.id === job.id);
     const base = { id: job.id, email: job.email, accountID, syncStatus: entry?.status };
@@ -69,6 +72,7 @@ export function createAccounts({ jobs, sync, request, lock, removeLocal, now = (
       schedulable: account.schedulable === true,
       reauthRequired: reauthRequiredOf(account),
       quota: quotaOf(account),
+      usage: usageOf(account, now().getTime()),
       deleting: sync.isDeleting(job.id),
       message: entry?.status === "failed" ? `同步或绑定校验失败：${entry.error || "服务暂不可用"}；请在自动同步面板重试。` : undefined,
     };
@@ -140,5 +144,5 @@ export function createAccounts({ jobs, sync, request, lock, removeLocal, now = (
     return { results, deleted: results.filter(item => item.deleted).length, failed: results.filter(item => !item.deleted).length };
   }
 
-  return { details, remove };
+  return { details, remove, refreshUsage: usage.refresh, trend: usage.trend };
 }
