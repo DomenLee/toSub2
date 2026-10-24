@@ -8,6 +8,9 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const expectedRestoredPasswordAddError = ["darwin", "win32"].includes(process.platform)
+  ? null
+  : "密码已经添加，但当前系统不支持持久凭据存储；结果文件已保留";
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "tosub2-restore-"));
 const outputRoot = path.join(tempRoot, "output");
 const restoredId = "11111111-1111-4111-8111-111111111111";
@@ -168,7 +171,7 @@ try {
   assert.equal(recoveredPassword.loginMode, "password");
   assert.equal(recoveredPassword.canAddPassword, false);
   assert.equal(recoveredPassword.canRetry, true);
-  assert.equal(recoveredPassword.passwordAddError, null);
+  assert.equal(recoveredPassword.passwordAddError, expectedRestoredPasswordAddError);
   assert.equal(recoveredPassword.passwordAddedAt, "2026-08-17T05:00:00.000Z");
   assert.match(recoveredPassword.prompt, /已恢复成功添加的新密码/);
   await assert.rejects(fs.access(path.join(interruptedPasswordDir, "password-add-result.json")));
