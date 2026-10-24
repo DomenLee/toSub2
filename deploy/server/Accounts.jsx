@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import Modal from "./Dialog.jsx";
 import { accountIsOnline, accountState } from "./account-state.js";
+import { sessionFetch as fetch } from "./session.js";
 
 async function request(token, endpoint, body, signal) {
   const response = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json", "x-console-token": token }, body: JSON.stringify(body), signal });

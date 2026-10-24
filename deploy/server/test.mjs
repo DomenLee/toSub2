@@ -94,12 +94,15 @@ try {
   encrypted.tag = "00".repeat(16);
   await fs.writeFile(encryptedFile, JSON.stringify(encrypted));
   await assert.rejects(store.load(job.email));
-  const server = http.createServer(async (req, res) => { if (authorize(req, res)) await serveStatic(req, res, new URL(req.url, "http://localhost").pathname); });
+  const server = http.createServer(async (req, res) => { if (await authorize(req, res)) await serveStatic(req, res, new URL(req.url, "http://localhost").pathname); });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   try {
     const base = `http://127.0.0.1:${server.address().port}`;
-    const headers = { Authorization: "Basic " + Buffer.from("admin:" + password).toString("base64") };
-    assert.equal((await fetch(base)).status, 401);
+    const login = await fetch(base + "/api/auth/login", { method: "POST", headers: { Origin: process.env.PUBLIC_ORIGIN, "content-type": "application/json" }, body: JSON.stringify({ username: "admin", password }) });
+    assert.equal(login.status, 200);
+    const headers = { Cookie: login.headers.get("set-cookie").split(";")[0] };
+    assert.equal((await fetch(base, { redirect: "manual" })).status, 302);
+    assert.equal((await fetch(base + "/api/bootstrap")).status, 401);
     assert.equal(await (await fetch(base, { headers })).text(), "SAFE_PAGE");
     const favicon = await fetch(base + "/favicon.svg", { headers });
     assert.equal(favicon.status, 200);

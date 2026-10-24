@@ -24,7 +24,7 @@ services:
     networks:
       - app
     healthcheck:
-      test: [CMD, node, -e, "const fs=require('node:fs');fetch('http://127.0.0.1:4399/api/bootstrap',{headers:{Authorization:'Basic '+Buffer.from('admin:'+fs.readFileSync('/run/secrets/console-password','utf8').trim()).toString('base64')}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:4399/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3

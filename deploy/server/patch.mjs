@@ -37,7 +37,11 @@ await replace("src/console-server.mjs", `const vite = await createViteServer({
 });
 accountSync.start();
 accountRepair.start();`);
-await replace("src/console-server.mjs", "    enforceUtf8ContentType(res);", "    if (!authorize(req, res)) return;\n    enforceUtf8ContentType(res);");
+await replace("src/console-server.mjs", "    enforceUtf8ContentType(res);", "    if (!await authorize(req, res)) return;\n    enforceUtf8ContentType(res);");
+await replace("src/console-server.mjs", 'const consoleToken = crypto.randomBytes(24).toString("base64url");', '');
+await replace("src/console-server.mjs", "      token: consoleToken,", "      token: req.consoleSession.token,");
+await replace("src/console-server.mjs", "        retry: true,", "        retry: true,\n        sessionAuth: true,");
+await replace("src/console-server.mjs", '  if (req.headers["x-console-token"] !== consoleToken) {', '  if (req.headers["x-console-token"] !== req.consoleSession.token) {');
 await replace("src/console-server.mjs", `    vite.middlewares(req, res, (error) => {
       if (error) sendJson(res, 500, { error: error.message || "Page rendering failed" });
     });`, "    await serveStatic(req, res, requestUrl.pathname);");
@@ -62,7 +66,7 @@ await replace("src/console-server.mjs", "        sub2apiMonitor: true,", "      
 await replace("src/console-server.mjs", "    await finishSub2ApiAutoRepairSuccess(job);", "    await accountSync.sync(job);\n    await finishSub2ApiAutoRepairSuccess(job);");
 await replace("src/console-server.mjs", "    queueSchedulingPaused = true;", "    queueSchedulingPaused = true;\n    await accountRepair.stop();");
 await replace("src/console-server.mjs", "    await vite.close();", "    await accountSync.stop();");
-await replace("src/console-server.mjs", 'console.log("[note] LAN access is enabled without authentication. Keep downloaded OAuth files private.");', 'console.log("[note] All console routes require authentication.");');
+await replace("src/console-server.mjs", 'console.log("[note] LAN access is enabled without authentication. Keep downloaded OAuth files private.");', 'console.log("[note] Console data and operations require session authentication.");');
 await replace("src/tls-transport.mjs", "verifyTls: shouldVerifyTlsForProxy(proxy)", "verifyTls: true");
 await replace("src/protocol-login.mjs", "options.mode ? { mode: options.mode } : undefined", "{ mode: options.mode || 0o600 }");
 await replace("src/protocol-login.mjs", '  const chatgptAccountId = claims.sid || "";', '  const chatgptAccountId = authClaims.chatgpt_account_id || decodeJwtPayload(tokenSet.access_token)["https://api.openai.com/auth"]?.chatgpt_account_id || "";\n  if (!chatgptAccountId || chatgptAccountId.startsWith("authsess_")) throw new Error("OAuth token has no valid ChatGPT workspace ID");');
@@ -72,8 +76,10 @@ let web = await fs.readFile(webFile, "utf8");
 const start = web.indexOf('        <div className="provider-toolbar sub2api-toolbar"');
 const end = web.indexOf('        <div className="provider-toolbar account-proxy-toolbar"', start);
 if (start < 0 || end < 0) throw new Error("Upstream Sub2API toolbar changed");
-web = 'import SyncPanel from "./SyncPanel.jsx";\n' + web.slice(0, start) + '        <SyncPanel token={token} accountIssues={accountIssueCount} accountError={linkedAccountError} onChange={refreshLinkedAccounts} />\n\n' + web.slice(end);
+web = 'import Auth, { Logout } from "./Auth.jsx";\nimport { sessionFetch as fetch } from "./session.js";\nimport SyncPanel from "./SyncPanel.jsx";\n' + web.slice(0, start) + '        <SyncPanel token={token} accountIssues={accountIssueCount} accountError={linkedAccountError} onChange={refreshLinkedAccounts} />\n\n' + web.slice(end);
 await fs.writeFile(webFile, web);
+await replace("web/src/main.jsx", "appRoot.render(<App />);", "appRoot.render(<Auth><App /></Auth>);");
+await replace("web/src/main.jsx", '        <div className="summary" aria-label="任务统计">', '        <div className="summary" aria-label="任务统计">\n          <Logout />');
 
 await replace("src/console-server.mjs", 'import { createRepair } from "./server-repair.mjs";', 'import { createRepair } from "./server-repair.mjs";\nimport { createAccounts } from "./server-accounts.mjs";');
 await replace("src/console-server.mjs", "const accountSync = await createSync({ jobs, request: await createRequest() });", "const accountRequest = await createRequest();\nconst accountSync = await createSync({ jobs, request: accountRequest });\nconst linkedAccounts = createAccounts({ jobs, sync: accountSync, request: accountRequest, lock: withEmailJobLock, removeLocal: deleteJobsByEmail });");

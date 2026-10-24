@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, ChevronDown, ChevronUp, CircleAlert, ShieldCheck } from "lucide-react";
 import "./SyncPanel.css";
+import { sessionFetch as fetch } from "./session.js";
 
 const ATTENTION_STATUSES = new Set(["blocked", "failed", "limited", "waiting", "sync_pending"]);
 

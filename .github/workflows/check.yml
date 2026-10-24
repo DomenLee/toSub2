@@ -21,6 +21,21 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: node deploy/server/check.mjs
       - run: bash -n deploy/server/deploy-github.sh
+      - run: python3 deploy/server/password-stage.test.py
+  image:
+    name: Isolated production image
+    if: github.event_name == 'pull_request'
+    needs: server
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and test session authentication in the production entrypoint
+        run: |
+          docker build --provenance=false -f deploy/server/Dockerfile -t tosub2:pr-check .
+          for test in repair.integration.mjs accounts.integration.mjs; do
+            docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --add-host sub2api:127.0.0.1 --tmpfs /data:rw,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=0700 --tmpfs /tmp:rw,nosuid,nodev,size=64m,mode=1777 -e TOSUB2_ISOLATED_TEST=true --mount "type=bind,source=$PWD/deploy/server,target=/checks,readonly" tosub2:pr-check node "/checks/$test"
+          done
   test:
     name: Node.js ubuntu-latest
     runs-on: ubuntu-latest

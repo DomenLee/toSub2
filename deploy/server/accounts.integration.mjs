@@ -12,7 +12,7 @@ const accounts = new Map();
 const deleted = [];
 let migrations = 0;
 let failDelete = true;
-const password = crypto.randomBytes(24).toString("hex");
+const password = crypto.randomBytes(6).toString("hex");
 process.env.CONSOLE_PASSWORD_FILE = "/data/console-password";
 process.env.CREDENTIAL_KEY_FILE = "/data/credential-key";
 process.env.SUB2API_KEY_FILE = "/data/sub2api-key";
@@ -74,7 +74,7 @@ const upstream = http.createServer(async (req, res) => {
 });
 await new Promise(resolve => upstream.listen(8080, "127.0.0.1", resolve));
 const base = "http://127.0.0.1:4399";
-const headers = { Authorization: "Basic " + Buffer.from(`admin:${password}`).toString("base64"), "content-type": "application/json" };
+const headers = { Origin: process.env.PUBLIC_ORIGIN, "content-type": "application/json" };
 let child;
 let exited;
 let output = "";
@@ -86,9 +86,10 @@ async function start() {
   for (let attempt = 0; attempt < 100; attempt++) {
     if (child.exitCode !== null) throw new Error(output);
     try {
-      const response = await fetch(base + "/api/bootstrap", { headers });
+      const response = await fetch(base + "/api/auth/login", { method: "POST", headers, body: JSON.stringify({ username: "admin", password }) });
       if (response.ok) {
-        const bootstrap = await response.json();
+        headers.Cookie = response.headers.get("set-cookie").split(";")[0];
+        const bootstrap = await (await fetch(base + "/api/bootstrap", { headers })).json();
         headers["x-console-token"] = bootstrap.token;
         assert.equal(bootstrap.features.linkedAccounts, true);
         return;
@@ -110,6 +111,12 @@ async function post(endpoint, body) {
 }
 try {
   await start();
+  const probe = spawn(process.execPath, ["/checks/probe.mjs"], { env: { ...process.env, TOSUB2_PROBE_SESSION: "true", TOSUB2_PROBE_MODE: "idle" }, stdio: ["ignore", "pipe", "pipe"] });
+  let probeOutput = "";
+  probe.stdout.on("data", chunk => { probeOutput += chunk; });
+  probe.stderr.on("data", chunk => { probeOutput += chunk; });
+  const probeExit = await new Promise((resolve, reject) => { probe.once("error", reject); probe.once("exit", resolve); });
+  assert.equal(probeExit, 0, probeOutput);
   for (let attempt = 0; attempt < 100 && migrations === 0; attempt++) await delay(100);
   assert.equal(migrations, 1, "startup repairs a legacy binding even when its output digest is unchanged");
   const migrated = accounts.get(44);

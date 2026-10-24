@@ -1,32 +1,15 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createAuth } from "./auth.mjs";
 
-const password = (await fs.readFile(process.env.CONSOLE_PASSWORD_FILE || "/run/secrets/console-password", "utf8")).trim();
-if (password.length < 24) throw new Error("Console password must contain at least 24 characters");
-const expected = Buffer.from("Basic " + Buffer.from(`admin:${password}`).toString("base64"));
+export const authorize = await createAuth();
 const key = Buffer.from((await fs.readFile(process.env.CREDENTIAL_KEY_FILE || "/run/secrets/credential-key", "utf8")).trim(), "hex");
 if (key.length !== 32) throw new Error("Credential encryption key must contain 32 bytes");
 const credentialRoot = process.env.CREDENTIAL_ROOT || "/data/credentials";
 
-export function authorize(req, res) {
-  const provided = Buffer.from(String(req.headers.authorization || ""));
-  res.setHeader("Cache-Control", "no-store");
-  if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
-    res.writeHead(401, { "WWW-Authenticate": 'Basic realm="toSub2", charset="UTF-8"' });
-    res.end("Authentication required");
-    return false;
-  }
-  if (req.headers.origin && req.headers.origin !== process.env.PUBLIC_ORIGIN) {
-    res.writeHead(403);
-    res.end("Origin denied");
-    return false;
-  }
-  return true;
-}
-
 export async function serveStatic(req, res, pathname) {
-  const relative = pathname === "/" ? "index.html" : pathname.slice(1);
+  const relative = ["/", "/login"].includes(pathname) ? "index.html" : pathname.slice(1);
   const allowedAsset = relative === "favicon.svg" || /^assets\/[a-zA-Z0-9_.-]+\.(js|css|svg|png|woff2?)$/.test(relative);
   if (!["GET", "HEAD"].includes(req.method) || (relative !== "index.html" && !allowedAsset)) {
     res.writeHead(404);
