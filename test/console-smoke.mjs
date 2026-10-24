@@ -8,6 +8,9 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const expectedPasswordAddError = ["darwin", "win32"].includes(process.platform)
+  ? null
+  : "当前系统不支持持久凭据存储，新密码仅在本次服务运行期间可用";
 const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), "tosub2-console-"));
 const port = await findAvailablePort();
 const baseUrl = `http://127.0.0.1:${port}`;
@@ -455,7 +458,7 @@ try {
     (value) => value.status === "completed" && value.passwordAddedAt,
   );
   assert.equal(passwordAddedJob.lastOperationType, "add_password");
-  assert.equal(passwordAddedJob.passwordAddError, null);
+  assert.equal(passwordAddedJob.passwordAddError, expectedPasswordAddError);
   assert.equal(passwordAddedJob.canAddPassword, false);
 
   const passwordSourceResponse = await fetch(`${baseUrl}/api/jobs/export-source`, {
@@ -491,7 +494,7 @@ try {
     profileJob.id,
     (value) => value.status === "completed" && value.passwordAddedAt,
   );
-  assert.equal(profilePasswordAdded.passwordAddError, null);
+  assert.equal(profilePasswordAdded.passwordAddError, expectedPasswordAddError);
   assert.equal(profilePasswordAdded.canAddPassword, false);
 
   const incompleteAuthorizationResponse = await fetch(`${baseUrl}/api/jobs`, {
