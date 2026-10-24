@@ -11,6 +11,9 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const expectedPasswordAddError = ["darwin", "win32"].includes(process.platform)
   ? null
   : "当前系统不支持持久凭据存储，新密码仅在本次服务运行期间可用";
+const expectedResumePasswordPrompt = expectedPasswordAddError
+  ? "密码添加成功，但新密码未能持久保存"
+  : "密码添加成功，可以继续未完成的 Codex 授权";
 const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), "tosub2-console-"));
 const port = await findAvailablePort();
 const baseUrl = `http://127.0.0.1:${port}`;
@@ -528,7 +531,7 @@ try {
   assert.equal(incompletePasswordAdded.canRetry, true);
   assert.equal(incompletePasswordAdded.canAddPassword, false);
   assert.equal(incompletePasswordAdded.loginMode, "password");
-  assert.match(incompletePasswordAdded.prompt, /可以继续未完成的 Codex 授权/);
+  assert.equal(incompletePasswordAdded.prompt, expectedResumePasswordPrompt);
   const incompletePasswordLogs = await fetch(`${baseUrl}/api/jobs/${incompleteAuthorizationId}/logs`, { headers })
     .then((response) => response.json());
   assert.match(incompletePasswordLogs.logs, /Reusing verified login checkpoint/);
