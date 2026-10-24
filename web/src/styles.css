@@ -303,7 +303,6 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .linked-account-detail-grid strong { display: block; margin-top: 3px; color: var(--ink); font-size: 12px; }
 .linked-account-detail-grid strong.online, .linked-account-detail-grid strong.authorized { color: var(--green-strong); }
 .linked-account-detail-grid strong.offline, .linked-account-detail-grid strong.reauth { color: var(--danger); }
-
 .table-frame { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-md); }
 table { width: 100%; min-width: 1740px; border-collapse: collapse; table-layout: fixed; }
 th {
