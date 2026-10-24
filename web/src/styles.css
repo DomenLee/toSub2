@@ -304,7 +304,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .linked-account-detail-grid strong.online, .linked-account-detail-grid strong.authorized { color: var(--green-strong); }
 .linked-account-detail-grid strong.offline, .linked-account-detail-grid strong.reauth { color: var(--danger); }
 .table-frame { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-md); }
-table { width: 100%; min-width: 1740px; border-collapse: collapse; table-layout: fixed; }
+table { width: 100%; min-width: 0; border-collapse: collapse; table-layout: fixed; }
 th {
   height: 42px;
   padding: 0 16px;
@@ -520,7 +520,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .operation-time-cell { color: #4f5b57; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .operation-time-cell time { display: block; font-size: 12px; }
 .operation-time-cell span { display: block; margin-top: 4px; color: #8a9490; font-size: 10px; white-space: normal; }
-.row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; white-space: nowrap; }
+.row-actions { display: flex; align-items: center; justify-content: flex-end; align-content: flex-start; gap: 7px; flex-wrap: wrap; white-space: nowrap; }
 .row-actions > button { flex: 0 0 auto; white-space: nowrap; }
 .download-button { height: 32px; padding: 0 11px; font-size: 12px; }
 .retry-button {
