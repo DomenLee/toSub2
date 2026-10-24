@@ -3,6 +3,23 @@ import { workspaceOf } from "./identity.mjs";
 
 const terminal = new Set(["completed", "failed", "canceled", "reauth_required", "resume_available"]);
 const emailOf = account => String(account?.credentials?.email || account?.extra?.email || account?.name || "").trim().toLowerCase();
+const numberOrNull = value => typeof value === "number" && Number.isFinite(value) ? value : null;
+
+function quotaOf(account) {
+  return {
+    total: numberOrNull(account?.quota_limit),
+    used: numberOrNull(account?.quota_used),
+    dailyTotal: numberOrNull(account?.quota_daily_limit),
+    dailyUsed: numberOrNull(account?.quota_daily_used),
+    weeklyTotal: numberOrNull(account?.quota_weekly_limit),
+    weeklyUsed: numberOrNull(account?.quota_weekly_used),
+  };
+}
+
+function reauthRequiredOf(account) {
+  const message = String(account?.error_message || "");
+  return /\b401\b|unauthori[sz]ed|invalid[_ -]?token|refresh[_ -]?token|authentication|认证|授权|登录/i.test(message);
+}
 
 function groupsOf(account) {
   const names = new Map();
@@ -42,7 +59,16 @@ export function createAccounts({ jobs, sync, request, lock, removeLocal, now = (
     if (account?.id !== accountID || account.platform !== "openai" || account.type !== "oauth" || account.parent_account_id || emailOf(account) !== job.email.toLowerCase() || workspaceOf(account) !== workspace) {
       throw new Error("账号编号、邮箱或真实工作区与任务不一致，请先在 Sub2API 核对绑定，未执行删除");
     }
-    return { ...base, status: "ready", groups: groupsOf(account), accountStatus: String(account.status || ""), deleting: sync.isDeleting(job.id) };
+    return {
+      ...base,
+      status: "ready",
+      groups: groupsOf(account),
+      accountStatus: String(account.status || ""),
+      schedulable: account.schedulable === true,
+      reauthRequired: reauthRequiredOf(account),
+      quota: quotaOf(account),
+      deleting: sync.isDeleting(job.id),
+    };
   }
 
   async function detail(job, includeStats = true) {

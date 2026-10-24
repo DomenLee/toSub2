@@ -21,7 +21,7 @@ await fs.writeFile(process.env.SUB2API_KEY_FILE, "fake-integration-key", { mode:
 const state = {};
 for (const item of definitions) {
   const original = { name: item.email, platform: "openai", type: "oauth", credentials: { email: item.email, chatgpt_account_id: `workspace-${item.accountID}`, access_token: "FAKE_ACCESS", refresh_token: "FAKE_REFRESH" } };
-  accounts.set(item.accountID, { ...original, id: item.accountID, status: "active", group_ids: [7], groups: [{ id: 7, name: "Test Pool" }] });
+  accounts.set(item.accountID, { ...original, id: item.accountID, status: "active", schedulable: true, quota_limit: 100, quota_used: item.accountID - 40, group_ids: [7], groups: [{ id: 7, name: "Test Pool" }] });
   const directory = `/data/jobs/${item.id}`;
   await fs.mkdir(directory, { recursive: true });
   const raw = JSON.stringify({ type: "sub2api-data", accounts: [original] });
@@ -96,6 +96,9 @@ try {
   assert.equal(detail.items.length, 3);
   assert.equal(detail.items[0].groups[0].name, "Test Pool");
   assert.equal(detail.items[0].userCost, 12.345678);
+  assert.equal(detail.items[0].quota.total, 100);
+  assert.equal(detail.items[0].quota.used, 2);
+  assert.equal(detail.items[0].schedulable, true);
   assert.equal(JSON.stringify(detail).includes("FAKE_"), false);
   const partial = await post("/api/jobs/delete-batch", { ids: definitions.slice(0, 2).map(item => item.id), deleteLinkedAccounts: true, links: detail.items });
   assert.equal(partial.deleted, 1);

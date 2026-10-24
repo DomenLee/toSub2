@@ -41,7 +41,7 @@ async function fixture({ linked = true, remoteMissing = false, mismatch = false,
       return {};
     }
     if (!exists) throw Object.assign(new Error("not found"), { status: 404 });
-    return { ...source, id: 42, credentials: { ...source.credentials, chatgpt_account_id: mismatch ? "wrong-workspace" : "workspace-a" }, group_ids: [7, 8], groups: [{ id: 7, name: "Main" }], account_groups: [{ group_id: 8, group: { name: "Backup" } }] };
+    return { ...source, id: 42, status: "active", schedulable: true, quota_limit: 100, quota_used: 12.5, credentials: { ...source.credentials, chatgpt_account_id: mismatch ? "wrong-workspace" : "workspace-a" }, group_ids: [7, 8], groups: [{ id: 7, name: "Main" }], account_groups: [{ group_id: 8, group: { name: "Backup" } }] };
   };
   const sync = await createSync({ jobs, request, stateFile });
   const local = [];
@@ -57,6 +57,8 @@ try {
   const valid = await fixture();
   const details = await valid.accounts.details([valid.job]);
   assert.equal(details[0].userCost, 1.234567);
+  assert.deepEqual(details[0].quota, { total: 100, used: 12.5, dailyTotal: null, dailyUsed: null, weeklyTotal: null, weeklyUsed: null });
+  assert.equal(details[0].schedulable, true);
   assert.deepEqual(details[0].groups, [{ id: 7, name: "Main" }, { id: 8, name: "Backup" }]);
   assert.equal(JSON.stringify(details).includes("FAKE_"), false);
   assert.equal((await valid.accounts.remove([valid.job], true, details)).deleted, 1);
