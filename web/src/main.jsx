@@ -1578,11 +1578,14 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
   const [value, setValue] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [mobileCollapsed, setMobileCollapsed] = useState(terminal);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const actionsId = `job-actions-${job.id}`;
 
   useEffect(() => setValue(""), [job.status]);
   useEffect(() => {
     if (!terminal) setMobileCollapsed(false);
   }, [terminal]);
+  useEffect(() => setActionsOpen(false), [job.status]);
 
   async function sendInput(action, submittedValue = value) {
     setSubmitting(true);
@@ -1853,6 +1856,18 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
               <Download size={16} />下载
             </button>
           )}
+          <button
+            type="button"
+            className="actions-toggle"
+            onClick={() => setActionsOpen((current) => !current)}
+            aria-expanded={actionsOpen}
+            aria-controls={actionsId}
+          >
+            {actionsOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+            {actionsOpen ? "收起" : "更多"}
+          </button>
+        </div>
+        <div id={actionsId} className={`row-actions-extra${actionsOpen ? " open" : ""}`}>
           {job.canDownload && sub2apiUploadAvailable && (
             <button type="button" className="secondary-button" onClick={onUpload} disabled={submitting} title="上传到已配置的 Sub2API 号池">
               <Send size={16} />上传

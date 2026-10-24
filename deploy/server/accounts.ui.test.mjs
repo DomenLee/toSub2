@@ -48,8 +48,15 @@ export async function testUI(directory) {
     button("收起更多操作").click();
     await until(() => !document.querySelector(".bulk-advanced-actions")?.classList.contains("open"));
     assert.equal(document.querySelector(".bulk-advanced-actions")?.classList.contains("open"), false, "bulk actions should collapse again");
-    await until(() => document.querySelector(".job-row.mobile-collapsed"));
+    await until(() => button("更多"));
     const firstJobRow = document.querySelector(".job-row");
+    assert.equal(firstJobRow.querySelector(".row-actions-extra").classList.contains("open"), false, "row actions should be collapsed by default");
+    firstJobRow.querySelector("button.actions-toggle").click();
+    await until(() => firstJobRow.querySelector(".row-actions-extra").classList.contains("open"));
+    assert.equal(firstJobRow.querySelector(".row-actions-extra").classList.contains("open"), true, "row actions should expand on demand");
+    firstJobRow.querySelector("button.actions-toggle").click();
+    await until(() => !firstJobRow.querySelector(".row-actions-extra").classList.contains("open"));
+    await until(() => document.querySelector(".job-row.mobile-collapsed"));
     firstJobRow.querySelector("button.account-collapse-toggle").click();
     await until(() => !firstJobRow.classList.contains("mobile-collapsed"));
     firstJobRow.querySelector("button.account-collapse-toggle").click();
