@@ -3240,7 +3240,12 @@ async function deleteJobsByEmail(email) {
   });
   await Promise.allSettled(matching.map((job) => job.metadataWritePromise).filter(Boolean));
   await Promise.all([
-    ...[...directories].map((directory) => fs.rm(directory, { recursive: true, force: true })),
+    ...[...directories].map((directory) => fs.rm(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    })),
     deleteStoredLoginCredentials(email),
   ]);
   scheduleQueuedJobs();
