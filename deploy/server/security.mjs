@@ -27,7 +27,8 @@ export function authorize(req, res) {
 
 export async function serveStatic(req, res, pathname) {
   const relative = pathname === "/" ? "index.html" : pathname.slice(1);
-  if (!["GET", "HEAD"].includes(req.method) || (relative !== "index.html" && !/^assets\/[a-zA-Z0-9_.-]+\.(js|css|svg|png|woff2?)$/.test(relative))) {
+  const allowedAsset = relative === "favicon.svg" || /^assets\/[a-zA-Z0-9_.-]+\.(js|css|svg|png|woff2?)$/.test(relative);
+  if (!["GET", "HEAD"].includes(req.method) || (relative !== "index.html" && !allowedAsset)) {
     res.writeHead(404);
     res.end("Not found");
     return;
