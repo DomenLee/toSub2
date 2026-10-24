@@ -3,7 +3,7 @@
 ## GitHub 自动发布（2026-10-24 配置）
 
 - 修改仓库：`https://github.com/DomenLee/toSub2.git`；本机：`/Users/lifengdem1pro/Documents/students/toSub2`。业务与集成补丁只在本仓库修改，不混入 Sub2API 工作区的其他改动。
-- `.github/workflows/deploy.yml` 仅在 `main` 推送或选择 `main` 手动执行时发布。先运行原有跨平台回归、生产补丁/前端构建与交互测试，再在 GitHub 构建镜像并以无外网、空数据目录执行真实服务入口集成测试。
+- `.github/workflows/deploy.yml` 仅在 `main` 推送或选择 `main` 手动执行时发布。先运行 Ubuntu 回归、生产补丁/前端构建与交互测试，再在 GitHub 构建镜像并以无外网、空数据目录执行真实服务入口集成测试。检查工作流仅使用 Ubuntu，Windows 测试已移除。
 - 通过测试的同一个镜像推送到 `ghcr.io/domenlee/tosub2:<完整 main SHA>`，不使用 `latest`。服务器复核远端 main 最新 SHA、OCI 提交标签、运行镜像 ID、健康和新功能 bootstrap；失败保留受限日志并回滚应用配置与旧镜像，不恢复数据库覆盖新写入。
 - Actions Secrets：`VULTR_HOST`、`VULTR_DEPLOY_KEY`、`VULTR_KNOWN_HOSTS`。专用部署密钥只允许执行 `/opt/tosub2/bin/deploy-github.sh` 的 `deploy <完整 SHA>` 命令，不允许任意 SSH 命令、转发或交互终端。GHCR 使用工作流短期令牌，临时 Docker 登录配置在部署结束时删除；不保存长期 GitHub 令牌到服务器。
 - 服务器入口的首次安装属于单独的运维基础设施配置，不代表应用发布。后续如修改守卫脚本，需单独核对后安装服务器版本，不能仅提交仓库就假设服务器守卫已同步。
