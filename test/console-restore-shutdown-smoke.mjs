@@ -190,29 +190,33 @@ try {
   const created = await createResponse.json();
   await waitForJob(headers, created.job.id, (job) => job.status === "mfa_otp");
 
-  const monitorConfigResponse = await fetch(`${baseUrl}/api/sub2api/monitor`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      enabled: true,
-      config: { baseUrl: sub2apiUrl, adminApiKey: "shutdown-test-key" },
-    }),
-  });
-  assert.equal(monitorConfigResponse.status, 200, await monitorConfigResponse.text());
-  void fetch(`${baseUrl}/api/sub2api/monitor/check`, { method: "POST", headers }).catch(() => {});
-  await Promise.race([
-    monitorRequestStarted,
-    delay(3_000).then(() => { throw new Error("monitor request did not start"); }),
-  ]);
-  const shutdownStartedAt = Date.now();
-  child.kill("SIGTERM");
-  const exit = await Promise.race([childExit, delay(10_000).then(() => null)]);
-  assert.ok(exit, "console did not exit after SIGTERM");
-  assert.equal(exit.code, 0, logs);
-  assert.ok(Date.now() - shutdownStartedAt < 5_000, "shutdown should abort the pending Sub2API monitor request");
-  const metadata = JSON.parse(await fs.readFile(path.join(outputRoot, created.job.id, "job-meta.json"), "utf8"));
-  assert.equal(metadata.status, "canceled");
-  assert.equal(metadata.prompt, "流程已取消");
+  if (process.platform === "win32") {
+    console.log("Windows 不支持向 Node 子进程传递可捕获的 SIGTERM，跳过优雅退出信号断言");
+  } else {
+    const monitorConfigResponse = await fetch(`${baseUrl}/api/sub2api/monitor`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        enabled: true,
+        config: { baseUrl: sub2apiUrl, adminApiKey: "shutdown-test-key" },
+      }),
+    });
+    assert.equal(monitorConfigResponse.status, 200, await monitorConfigResponse.text());
+    void fetch(`${baseUrl}/api/sub2api/monitor/check`, { method: "POST", headers }).catch(() => {});
+    await Promise.race([
+      monitorRequestStarted,
+      delay(3_000).then(() => { throw new Error("monitor request did not start"); }),
+    ]);
+    const shutdownStartedAt = Date.now();
+    child.kill("SIGTERM");
+    const exit = await Promise.race([childExit, delay(10_000).then(() => null)]);
+    assert.ok(exit, "console did not exit after SIGTERM");
+    assert.equal(exit.code, 0, logs);
+    assert.ok(Date.now() - shutdownStartedAt < 5_000, "shutdown should abort the pending Sub2API monitor request");
+    const metadata = JSON.parse(await fs.readFile(path.join(outputRoot, created.job.id, "job-meta.json"), "utf8"));
+    assert.equal(metadata.status, "canceled");
+    assert.equal(metadata.prompt, "流程已取消");
+  }
   console.log("console restore and graceful shutdown tests passed");
 } finally {
   if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
