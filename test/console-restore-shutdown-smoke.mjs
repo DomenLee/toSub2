@@ -177,7 +177,11 @@ try {
   assert.equal(recoveredPassword.passwordAddError, expectedRestoredPasswordAddError);
   assert.equal(recoveredPassword.passwordAddedAt, "2026-08-17T05:00:00.000Z");
   assert.equal(recoveredPassword.prompt, expectedRestoredPasswordPrompt);
-  await assert.rejects(fs.access(path.join(interruptedPasswordDir, "password-add-result.json")));
+  if (expectedRestoredPasswordAddError) {
+    await fs.access(path.join(interruptedPasswordDir, "password-add-result.json"));
+  } else {
+    await assert.rejects(fs.access(path.join(interruptedPasswordDir, "password-add-result.json")));
+  }
   const recoveredTotp = page.jobs.find((job) => job.id === interruptedTotpId);
   assert.equal(recoveredTotp.status, "resume_available");
   assert.equal(recoveredTotp.hasTotpKey, true);
