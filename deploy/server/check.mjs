@@ -10,7 +10,7 @@ import { testUI } from "./accounts.ui.test.mjs";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const temporary = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tosub2-build-")));
 try {
-  for (const name of ["test.mjs", "identity.test.mjs", "repair.test.mjs", "accounts.test.mjs"]) execFileSync(process.execPath, [path.join(root, "deploy/server", name)], { cwd: root, stdio: "inherit" });
+  for (const name of ["test.mjs", "identity.test.mjs", "binding.test.mjs", "repair.test.mjs", "accounts.test.mjs"]) execFileSync(process.execPath, [path.join(root, "deploy/server", name)], { cwd: root, stdio: "inherit" });
   for (const name of ["src", "web", "package.json"]) await fs.cp(path.join(root, name), path.join(temporary, name), { recursive: true });
   await fs.symlink(path.join(root, "node_modules"), path.join(temporary, "node_modules"), "junction");
   execFileSync(process.execPath, [path.join(root, "deploy/server/patch.mjs"), temporary], { stdio: "inherit" });

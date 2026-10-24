@@ -14,7 +14,7 @@ const raw = JSON.stringify({ type: "sub2api-data", accounts: [source] });
 const digest = crypto.createHash("sha256").update(raw).digest("hex");
 let counter = 0;
 
-async function fixture({ linked = true, remoteMissing = false, mismatch = false, failStats = false, failDelete = false, failLocal = false, busy = false } = {}) {
+async function fixture({ linked = true, remoteMissing = false, mismatch = false, legacy = false, failStats = false, failDelete = false, failLocal = false, busy = false } = {}) {
   const directory = path.join(root, String(++counter));
   await fs.mkdir(directory);
   const job = { id: "job-a", email, status: busy ? "working" : "completed", resultSaved: true, outputPath: path.join(directory, "oauth.json") };
@@ -42,7 +42,7 @@ async function fixture({ linked = true, remoteMissing = false, mismatch = false,
       return {};
     }
     if (!exists) throw Object.assign(new Error("not found"), { status: 404 });
-    return { ...source, id: 42, status: "active", schedulable: true, quota_limit: 100, quota_used: 12.5, credentials: { ...source.credentials, chatgpt_account_id: mismatch ? "wrong-workspace" : "workspace-a" }, group_ids: [7, 8], groups: [{ id: 7, name: "Main" }], account_groups: [{ group_id: 8, group: { name: "Backup" } }] };
+    return { ...source, id: 42, status: "active", schedulable: true, quota_limit: 100, quota_used: 12.5, credentials: { ...source.credentials, chatgpt_account_id: legacy ? "authsess_old" : mismatch ? "wrong-workspace" : "workspace-a" }, group_ids: [7, 8], groups: [{ id: 7, name: "Main" }], account_groups: [{ group_id: 8, group: { name: "Backup" } }] };
   };
   const sync = await createSync({ jobs, request, stateFile });
   const local = [];
@@ -85,12 +85,21 @@ try {
   const mismatch = await fixture({ mismatch: true });
   const mismatchInfo = (await mismatch.accounts.details([mismatch.job]))[0];
   assert.equal(mismatchInfo.status, "error");
-  assert.equal(mismatchInfo.code, "binding_mismatch");
+  assert.equal(mismatchInfo.code, "workspace_mismatch");
   assert.equal(mismatchInfo.accountID, 42);
   assert.doesNotMatch(mismatchInfo.error, /未执行删除/);
   assert.equal((await mismatch.accounts.remove([mismatch.job], true, [{ id: mismatch.job.id, accountID: 42 }])).failed, 1);
   assert.equal(mismatch.local.length, 0);
   assert.equal(mismatch.calls.some(call => call.options.method === "DELETE"), false);
+
+  const legacy = await fixture({ legacy: true });
+  const legacyInfo = (await legacy.accounts.details([legacy.job]))[0];
+  assert.equal(legacyInfo.code, "legacy_workspace");
+  assert.equal(accountState({}, legacyInfo).label, "旧工作区待修复");
+  assert.match(legacyInfo.error, /账号 #42.*authsess_.*自动同步面板/);
+  assert.doesNotMatch(legacyInfo.error, /请核对该账号后刷新重试/);
+  assert.equal((await legacy.accounts.remove([legacy.job], true, [legacyInfo])).failed, 1);
+  assert.equal(legacy.calls.some(call => call.options.method === "DELETE"), false);
 
   const changed = await fixture();
   assert.equal((await changed.accounts.remove([changed.job], true, [{ id: changed.job.id, accountID: 99 }])).failed, 1);

@@ -10,6 +10,7 @@ assert.deepEqual(await fs.readdir("/data"), []);
 const definitions = [42, 43, 44].map((accountID, index) => ({ accountID, id: `11111111-1111-4111-8111-${String(index + 1).padStart(12, "0")}`, email: `account-${index}@example.invalid` }));
 const accounts = new Map();
 const deleted = [];
+let migrations = 0;
 let failDelete = true;
 const password = crypto.randomBytes(24).toString("hex");
 process.env.CONSOLE_PASSWORD_FILE = "/data/console-password";
@@ -22,6 +23,13 @@ const state = {};
 for (const item of definitions) {
   const original = { name: item.email, platform: "openai", type: "oauth", credentials: { email: item.email, chatgpt_account_id: `workspace-${item.accountID}`, access_token: "FAKE_ACCESS", refresh_token: "FAKE_REFRESH" } };
   accounts.set(item.accountID, { ...original, id: item.accountID, status: "active", schedulable: true, quota_limit: 100, quota_used: item.accountID - 40, group_ids: [7], groups: [{ id: 7, name: "Test Pool" }] });
+  if (item.accountID === 44) {
+    original.credentials.access_token = `test.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "workspace-44" } })).toString("base64url")}.test`;
+    original.credentials.chatgpt_account_id = "authsess_legacy";
+    const account = accounts.get(44);
+    account.credentials = { ...original.credentials, access_token: "CURRENT_ACCESS", refresh_token: "CURRENT_REFRESH", model_mapping: { model: "keep" } };
+    Object.assign(account, { status: "error", error_message: "HTTP 401", schedulable: false, proxy_id: 9, extra: { account_id: "authsess_legacy", chatgpt_account_id: "authsess_legacy", custom: "keep" } });
+  }
   const directory = `/data/jobs/${item.id}`;
   await fs.mkdir(directory, { recursive: true });
   const raw = JSON.stringify({ type: "sub2api-data", accounts: [original] });
@@ -41,6 +49,18 @@ const upstream = http.createServer(async (req, res) => {
   } else if (match && req.method === "GET") {
     data = accounts.get(Number(match[1]));
     if (!data) { res.writeHead(404).end(); return; }
+    data = structuredClone(data);
+    delete data.credentials.access_token;
+    delete data.credentials.refresh_token;
+  } else if (url.pathname === "/api/v1/admin/accounts/bulk-update" && req.method === "POST") {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString());
+    assert.deepEqual(body, { account_ids: [44], credentials: { chatgpt_account_id: "workspace-44" }, extra: { account_id: "workspace-44", chatgpt_account_id: "workspace-44" } });
+    Object.assign(accounts.get(44).credentials, body.credentials);
+    Object.assign(accounts.get(44).extra, body.extra);
+    migrations++;
+    data = { success: 1, failed: 0, success_ids: [44] };
   } else if (match && req.method === "DELETE") {
     const accountID = Number(match[1]);
     if (accountID === 43 && failDelete) { res.writeHead(503).end(); return; }
@@ -90,6 +110,19 @@ async function post(endpoint, body) {
 }
 try {
   await start();
+  for (let attempt = 0; attempt < 100 && migrations === 0; attempt++) await delay(100);
+  assert.equal(migrations, 1, "startup repairs a legacy binding even when its output digest is unchanged");
+  const migrated = accounts.get(44);
+  assert.equal(migrated.credentials.access_token, "CURRENT_ACCESS");
+  assert.equal(migrated.credentials.refresh_token, "CURRENT_REFRESH");
+  assert.deepEqual(migrated.credentials.model_mapping, { model: "keep" });
+  assert.equal(migrated.extra.custom, "keep");
+  assert.equal(migrated.status, "error");
+  assert.equal(migrated.error_message, "HTTP 401");
+  assert.equal(migrated.schedulable, false);
+  assert.equal(migrated.proxy_id, 9);
+  assert.equal(migrated.quota_limit, 100);
+  assert.deepEqual(migrated.group_ids, [7]);
   assert.equal((await fetch(base + "/api/jobs/delete-batch", { method: "POST" })).status, 401);
   assert.equal((await fetch(base + "/api/linked-accounts", { method: "POST", headers: { ...headers, Origin: "https://evil.invalid" }, body: "{}" })).status, 403);
   const detail = await post("/api/linked-accounts", { ids: definitions.map(item => item.id) });
@@ -116,10 +149,11 @@ try {
   const localOnly = await post("/api/jobs/delete-batch", { ids: [definitions[2].id] });
   assert.equal(localOnly.deleted, 1);
   assert.equal(accounts.has(44), true);
+  assert.equal(migrations, 1, "restart does not repeat metadata writes");
   assert.deepEqual(deleted, [42, 43]);
   const page = await (await fetch(base + "/api/jobs", { headers })).json();
   assert.equal(page.jobs.length, 0);
-  console.log("PASS: production API authentication, group/cost readback, redaction, partial delete, restart fencing, retry and local-only default");
+  console.log("PASS: production API legacy binding migration without token replay, preserved 401/configuration, authentication, group/cost readback, redaction, partial delete, restart fencing, retry and local-only default");
 } finally {
   await stop();
   upstream.closeAllConnections();

@@ -1,9 +1,10 @@
 import fs from "node:fs/promises";
-import { workspaceOf } from "./identity.mjs";
+import { assertBinding, workspaceOf } from "./identity.mjs";
 
 const terminal = new Set(["completed", "failed", "canceled", "reauth_required", "resume_available"]);
 const emailOf = account => String(account?.credentials?.email || account?.extra?.email || account?.name || "").trim().toLowerCase();
 const numberOrNull = value => typeof value === "number" && Number.isFinite(value) ? value : null;
+const bindingCodes = new Set(["binding_mismatch", "legacy_workspace", "workspace_missing", "workspace_mismatch", "email_mismatch"]);
 
 function quotaOf(account) {
   if (account.type === "oauth") return { supported: false, total: null, used: null };
@@ -52,16 +53,14 @@ export function createAccounts({ jobs, sync, request, lock, removeLocal, now = (
         if (output.accounts?.length === 1 && emailOf(output.accounts[0]) === job.email.toLowerCase()) workspace = workspaceOf(output.accounts[0]);
       } catch {}
     }
-    if (!workspace || workspace.startsWith("authsess_")) throw Object.assign(new Error("缺少可信的工作区绑定，请先在 Sub2API 核对账号与同步记录。"), { code: "binding_mismatch" });
+    if (!workspace || workspace.startsWith("authsess_")) throw Object.assign(new Error(`账号 #${accountID}：缺少可信的工作区绑定，请管理员核对并补齐原账号的绑定记录后重试。`), { code: "workspace_missing" });
     let account;
     try { account = await request(`/api/v1/admin/accounts/${accountID}`); }
     catch (error) {
       if (error.status === 404) return { ...base, status: "missing", message: "关联账号已不存在，请先在 Sub2API 核对；确认后可清理本地任务。" };
       throw error;
     }
-    if (account?.id !== accountID || account.platform !== "openai" || account.type !== "oauth" || account.parent_account_id || emailOf(account) !== job.email.toLowerCase() || workspaceOf(account) !== workspace) {
-      throw Object.assign(new Error("账号编号、邮箱或工作区与任务不一致，请先在 Sub2API 核对绑定，再刷新账号详情。"), { code: "binding_mismatch" });
-    }
+    assertBinding(account, { accountID, email: job.email, workspace });
     return {
       ...base,
       status: "ready",
@@ -71,7 +70,7 @@ export function createAccounts({ jobs, sync, request, lock, removeLocal, now = (
       reauthRequired: reauthRequiredOf(account),
       quota: quotaOf(account),
       deleting: sync.isDeleting(job.id),
-      message: entry?.status === "failed" ? `凭据同步失败：${entry.error || "服务暂不可用"}；请在自动同步面板重试。` : undefined,
+      message: entry?.status === "failed" ? `同步或绑定校验失败：${entry.error || "服务暂不可用"}；请在自动同步面板重试。` : undefined,
     };
   }
 
@@ -90,7 +89,8 @@ export function createAccounts({ jobs, sync, request, lock, removeLocal, now = (
         return { ...item, userCost: null, statsError: "累计扣费读取失败，请点击刷新重试；不影响已确认账号的删除" };
       }
     } catch (error) {
-      return { id: job.id, email: job.email, accountID: binding(job), status: "error", code: error.code === "binding_mismatch" ? error.code : "read_failed", error: `${String(error.message || "关联账号读取失败")}；请核对该账号后刷新重试。` };
+      const known = bindingCodes.has(error.code);
+      return { id: job.id, email: job.email, accountID: binding(job), status: "error", code: known ? error.code : "read_failed", error: known ? error.message : `${String(error.message || "关联账号读取失败")}；请核对该账号后刷新重试。` };
     }
   }
 
