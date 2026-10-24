@@ -82,6 +82,7 @@ try {
   await fs.writeFile(process.env.CREDENTIAL_KEY_FILE, crypto.randomBytes(32).toString("hex"));
   await fs.mkdir(process.env.WEB_DIST);
   await fs.writeFile(path.join(process.env.WEB_DIST, "index.html"), "SAFE_PAGE");
+  await fs.writeFile(path.join(process.env.WEB_DIST, "favicon.svg"), "FAVICON");
   const { authorize, serveStatic, createCredentialStore } = await import("./security.mjs");
   const store = createCredentialStore();
   await store.save(job.email, { password: "FAKE_PASSWORD", totpSecret: "FAKE_TOTP" });
@@ -100,6 +101,10 @@ try {
     const headers = { Authorization: "Basic " + Buffer.from("admin:" + password).toString("base64") };
     assert.equal((await fetch(base)).status, 401);
     assert.equal(await (await fetch(base, { headers })).text(), "SAFE_PAGE");
+    const favicon = await fetch(base + "/favicon.svg", { headers });
+    assert.equal(favicon.status, 200);
+    assert.equal(favicon.headers.get("content-type"), "image/svg+xml");
+    assert.equal(await favicon.text(), "FAVICON");
     assert.equal((await fetch(base + "/@fs/etc/passwd", { headers })).status, 404);
     assert.equal((await fetch(base + "/data/jobs", { headers })).status, 404);
     assert.equal((await fetch(base, { headers: { ...headers, Origin: "https://evil.invalid" } })).status, 403);
