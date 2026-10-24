@@ -51,8 +51,15 @@
 .sync-panel-event-task { color: #8b9c94; font-size: 10px; white-space: nowrap; }
 .sync-panel-empty { color: #789087; font-size: 11px; }
 @media (max-width: 760px) {
+  .sync-panel { padding: 10px; }
+  .sync-panel-icon { display: none; }
+  .sync-panel-title { gap: 5px; flex-wrap: wrap; }
+  .sync-panel-title strong { font-size: 12px; }
+  .sync-panel-badge { font-size: 9px; }
   .sync-panel-summary { align-items: flex-start; }
-  .sync-panel-toggle { margin-left: auto; }
+  .sync-panel-toggle { margin-left: auto; min-height: 44px; }
+  .sync-panel-alert-item button { min-height: 44px; }
+  .sync-panel-meta .sync-secondary-meta { display: none; }
   .sync-panel-meta span + span::before { display: none; }
   .sync-panel-meta { gap: 3px 8px; }
   .sync-panel-event { grid-template-columns: auto minmax(0, 1fr); }

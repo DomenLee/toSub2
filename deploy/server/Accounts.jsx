@@ -1,4 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
+import Modal from "./Dialog.jsx";
+import { accountIsOnline, accountState } from "./account-state.js";
 
 async function request(token, endpoint, body, signal) {
   const response = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json", "x-console-token": token }, body: JSON.stringify(body), signal });
@@ -7,55 +9,25 @@ async function request(token, endpoint, body, signal) {
   return result;
 }
 
-function Modal({ title, children, busy, onClose }) {
-  const closeButton = useRef(null);
-  const dialog = useRef(null);
-  const close = useRef(onClose);
-  close.current = onClose;
-  useEffect(() => {
-    const previous = document.activeElement;
-    closeButton.current?.focus();
-    return () => previous?.isConnected && previous.focus();
-  }, []);
-  function keydown(event) {
-    if (event.key === "Escape" && !busy) close.current();
-    if (event.key !== "Tab") return;
-    const controls = [...dialog.current.querySelectorAll("button:not(:disabled), input:not(:disabled), [tabindex='0']")];
-    const first = controls[0];
-    const last = controls[controls.length - 1];
-    if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-  }
-  return <div className="modal-backdrop" onMouseDown={event => { if (!busy && event.target === event.currentTarget) onClose(); }}>
-    <section ref={dialog} className="batch-dialog" role="dialog" aria-modal="true" aria-label={title} onKeyDown={keydown} style={{ width: "min(740px, 100%)" }}>
-      <div className="dialog-header"><div><h2>{title}</h2></div><button ref={closeButton} type="button" className="cancel-button" disabled={busy} onClick={onClose}>关闭</button></div>
-      {children}
-    </section>
-  </div>;
-}
-
 function Summary({ item }) {
-  const online = item.status === "ready"
-    && item.accountStatus === "active"
-    && item.schedulable === true
-    && !item.deleting
-    && !item.reauthRequired;
+  const online = accountIsOnline(item);
+  const state = accountState({}, item);
   const needsReauth = item.reauthRequired === true;
   const quota = item.quota || {};
-  const hasQuota = quota.total !== null && quota.total !== undefined || quota.used !== null && quota.used !== undefined;
-  const quotaAmount = value => typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(2)}` : "暂无";
+  const quotaAmount = value => typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(2)}` : "未提供";
   return <div style={{ marginTop: 10, padding: 12, border: "1px solid #d4dcda", borderRadius: 6, overflowWrap: "anywhere" }}>
-    <strong>{item.email} · {item.accountID ? `账号 #${item.accountID}` : "未绑定账号"}</strong>
+    <strong>{item.email} · {item.accountID ? `账号 #${item.accountID}` : state.label}</strong>
     {item.status === "ready" && <>
       <div className="linked-account-detail-grid">
-        <div><span>当前状态</span><strong className={online ? "online" : "offline"}>{online ? "在线" : "离线 / 不可用"}</strong></div>
+        <div><span>当前状态（可调度）</span><strong className={online ? "online" : "offline"}>{state.label}</strong></div>
         <div><span>重新授权</span><strong className={needsReauth ? "reauth" : "authorized"}>{needsReauth ? "需要重新授权" : "授权正常"}</strong></div>
-        <div><span>总额度</span><strong>{hasQuota ? (quota.total === 0 ? "不限额" : quotaAmount(quota.total)) : "暂无数据"}</strong></div>
-        <div><span>已使用额度</span><strong>{hasQuota ? quotaAmount(quota.used) : "暂无数据"}</strong></div>
+        <div><span>配置总额度</span><strong>{quota.supported === false ? "OAuth 不适用" : quota.total === 0 ? "不限额" : quotaAmount(quota.total)}</strong></div>
+        <div><span>配置额度已用</span><strong>{quota.supported === false ? "OAuth 不适用" : quotaAmount(quota.used)}</strong></div>
       </div>
+      <p className="account-summary-note">当前接口未提供 OAuth 订阅总额度或已用额度，无法计算剩余额度。</p>
       <div style={{ marginTop: 6 }}>所属分组：{item.groups.length ? item.groups.map(group => `${group.name}（#${group.id}）`).join("、") : "未加入分组"}</div>
       <div>用户累计扣费：{item.userCost === null || item.userCost === undefined ? "暂不可用" : `$${item.userCost.toFixed(6)}`}</div>
-      <small>统计本账号现存历史用量日志的实际扣费，不是账号成本；不包含已清理的日志和影子账号用量。</small>
+      <small>统计本账号现存历史用量日志的用户实际扣费，与订阅额度、账号成本不同；不包含已清理的日志和影子账号用量。</small>
       {item.updatedAt && <div><small>更新于 {new Date(item.updatedAt).toLocaleString()}</small></div>}
     </>}
     {item.message && <p>{item.message}</p>}
@@ -83,7 +55,7 @@ export function LinkedAccount({ token, job }) {
     return () => controller.abort();
   }, [open, token, job.id, job.email, revision]);
   return <>
-    <button type="button" className="selection-text-button" disabled={!token} onClick={() => setOpen(true)}>账号详情</button>
+    <button type="button" className="selection-text-button account-detail-button" disabled={!token} onClick={() => setOpen(true)}>账号详情</button>
     {open && <Modal title="关联账号详情" onClose={() => setOpen(false)}>
       {loading && <p role="status">正在读取 {job.email} 的关联账号…</p>}
       {error && <p className="dialog-error" role="alert">{error}</p>}

@@ -72,7 +72,7 @@ let web = await fs.readFile(webFile, "utf8");
 const start = web.indexOf('        <div className="provider-toolbar sub2api-toolbar"');
 const end = web.indexOf('        <div className="provider-toolbar account-proxy-toolbar"', start);
 if (start < 0 || end < 0) throw new Error("Upstream Sub2API toolbar changed");
-web = 'import SyncPanel from "./SyncPanel.jsx";\n' + web.slice(0, start) + '        <SyncPanel token={token} />\n\n' + web.slice(end);
+web = 'import SyncPanel from "./SyncPanel.jsx";\n' + web.slice(0, start) + '        <SyncPanel token={token} accountIssues={accountIssueCount} accountError={linkedAccountError} onChange={refreshLinkedAccounts} />\n\n' + web.slice(end);
 await fs.writeFile(webFile, web);
 
 await replace("src/console-server.mjs", 'import { createRepair } from "./server-repair.mjs";', 'import { createRepair } from "./server-repair.mjs";\nimport { createAccounts } from "./server-accounts.mjs";');
@@ -80,7 +80,7 @@ await replace("src/console-server.mjs", "const accountSync = await createSync({ 
 await replace("src/console-server.mjs", "    if (shuttingDown || job.deleted || jobs.get(job.id) !== job || !canForceRelogin(job))", "    if (shuttingDown || job.deleted || accountSync.isDeleting(job.id) || jobs.get(job.id) !== job || !canForceRelogin(job))");
 await replace("src/console-server.mjs", '  if (requestUrl.pathname.startsWith("/api/sub2api/")) {', `  if (req.method === "POST" && requestUrl.pathname === "/api/linked-accounts") {
     const body = await readJson(req);
-    sendJson(res, 200, { items: await linkedAccounts.details(resolveSelectedJobs(body.ids)) });
+    sendJson(res, 200, { items: await linkedAccounts.details(resolveSelectedJobs(body.ids), body.includeStats !== false) });
     return;
   }
   if (requestUrl.pathname.startsWith("/api/sub2api/")) {`);
@@ -118,4 +118,4 @@ await replace("web/src/main.jsx", "    </main>\n  );\n}\n\nfunction EmptyState",
 }
 
 function EmptyState`);
-await replace("web/src/main.jsx", "          <LoginMethodBadge job={job} />", "          <LoginMethodBadge job={job} />\n          <LinkedAccount token={token} job={job} />");
+await replace("web/src/main.jsx", "              <LoginMethodBadge job={job} />", "              <LoginMethodBadge job={job} />\n              <LinkedAccount token={token} job={job} />");

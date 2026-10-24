@@ -1,15 +1,21 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, ChevronDown, ChevronUp, CircleAlert, ShieldCheck } from "lucide-react";
 import "./SyncPanel.css";
 
 const ATTENTION_STATUSES = new Set(["blocked", "failed", "limited", "waiting", "sync_pending"]);
 
-export default function SyncPanel({ token }) {
+export default function SyncPanel({ token, accountIssues = 0, accountError, onChange }) {
   const [items, setItems] = useState([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [repair, setRepair] = useState(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const previousKey = useRef(null);
+  const syncKey = JSON.stringify(items.map(item => [item.id, item.status, item.accountID, item.updatedAt]));
+  useEffect(() => {
+    if (previousKey.current !== null && previousKey.current !== syncKey) onChange?.();
+    previousKey.current = syncKey;
+  }, [syncKey, onChange]);
 
   useEffect(() => {
     if (!token) return;
@@ -57,10 +63,10 @@ export default function SyncPanel({ token }) {
   const repairItems = Array.isArray(repair?.items) ? repair.items : [];
   const attentionItems = repairItems.filter(item => ATTENTION_STATUSES.has(item.status));
   const recoveredCount = repairItems.filter(item => item.status === "recovered").length;
-  const hasAttention = Boolean(failures.length || attentionItems.length || error || repair?.error);
+  const hasAttention = Boolean(failures.length || attentionItems.length || error || repair?.error || accountIssues || accountError);
   const hasDetails = Boolean(repair?.enabled || repair?.lastCheckAt || repairItems.length || items.length);
   const statusKind = hasAttention ? "attention" : repair?.enabled ? "active" : "idle";
-  const statusLabel = hasAttention ? "需要处理" : repair?.enabled ? "自动同步正常" : "等待配置";
+  const statusLabel = hasAttention ? "需要处理" : repair ? "同步服务运行中" : "读取中";
 
   return (
     <section className={`sync-panel sync-panel-${statusKind}`} aria-label="账号自动同步">
@@ -70,14 +76,16 @@ export default function SyncPanel({ token }) {
         </div>
         <div className="sync-panel-copy">
           <div className="sync-panel-title">
-            <strong>Sub2API 自动同步</strong>
+            <strong>账号自动同步</strong>
             <span className="sync-panel-badge">{statusLabel}</span>
           </div>
           <div className="sync-panel-meta">
             <span>已同步 {items.filter(item => item.status === "synced").length} 个任务</span>
-            {recoveredCount > 0 && <span>最近自动修复 {recoveredCount} 个账号</span>}
-            <span>{repair?.enabled ? "401 自动修复已开启" : repair ? "401 自动修复未开启" : "自动修复状态读取中"}</span>
-            {repair?.lastCheckAt && <span>最近检查 {formatRelativeTime(repair.lastCheckAt)}</span>}
+            {recoveredCount > 0 && <span className="sync-secondary-meta">最近自动修复 {recoveredCount} 个账号</span>}
+            <span className="sync-secondary-meta">{repair?.enabled ? "401 自动修复已开启" : repair ? "401 自动修复未开启" : "自动修复状态读取中"}</span>
+            {repair?.lastCheckAt && <span className="sync-secondary-meta">最近检查 {formatRelativeTime(repair.lastCheckAt)}</span>}
+            {accountIssues > 0 && <span>{accountIssues} 个账号需处理，见账号列表</span>}
+            {accountError && <span>账号状态读取失败，见概览提示</span>}
           </div>
         </div>
         {hasDetails && (

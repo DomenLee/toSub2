@@ -96,8 +96,9 @@ try {
   assert.equal(detail.items.length, 3);
   assert.equal(detail.items[0].groups[0].name, "Test Pool");
   assert.equal(detail.items[0].userCost, 12.345678);
-  assert.equal(detail.items[0].quota.total, 100);
-  assert.equal(detail.items[0].quota.used, 2);
+  assert.equal(detail.items[0].quota.supported, false);
+  assert.equal(detail.items[0].quota.total, null);
+  assert.equal(detail.items[0].quota.used, null);
   assert.equal(detail.items[0].schedulable, true);
   assert.equal(JSON.stringify(detail).includes("FAKE_"), false);
   const partial = await post("/api/jobs/delete-batch", { ids: definitions.slice(0, 2).map(item => item.id), deleteLinkedAccounts: true, links: detail.items });
