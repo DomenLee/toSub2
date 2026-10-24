@@ -3389,6 +3389,8 @@ async function syncCompletedOutputs(force = false) {
             ? "已恢复成功激活的 2FA 密钥，可以继续未完成的 Codex 授权"
             : passwordRecovery.recovered
               ? "已恢复成功添加的新密码，可以继续未完成的 Codex 授权"
+            : passwordRecovery.error
+              ? "原授权文件仍可下载，新密码需要重试恢复"
             : metadata.prompt || (restoredStatus === "resume_available"
               ? "检测到邮箱登录检查点，可以继续手机号绑定"
               : "已恢复上次操作状态，登录检查点仍然保留"),
