@@ -58,6 +58,11 @@ function App() {
   const [token, setToken] = useState("");
   const [features, setFeatures] = useState({});
   const [jobs, setJobs] = useState([]);
+  const [linkedAccountDetails, setLinkedAccountDetails] = useState({});
+  const [linkedAccountLoading, setLinkedAccountLoading] = useState(false);
+  const [linkedAccountError, setLinkedAccountError] = useState("");
+  const [linkedAccountUpdatedAt, setLinkedAccountUpdatedAt] = useState(null);
+  const [linkedAccountRevision, setLinkedAccountRevision] = useState(0);
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [batchOpen, setBatchOpen] = useState(false);
@@ -71,6 +76,7 @@ function App() {
   const [error, setError] = useState("");
   const [expandedJobId, setExpandedJobId] = useState(null);
   const [selectedJobIds, setSelectedJobIds] = useState(() => new Set());
+  const [bulkActionsOpen, setBulkActionsOpen] = useState(false);
   const [jobSelectionIndex, setJobSelectionIndex] = useState([]);
   const [batchAction, setBatchAction] = useState("");
   const [page, setPage] = useState(1);
@@ -192,6 +198,7 @@ function App() {
   }, [token, features.sub2apiMonitor]);
 
   const pageJobIds = useMemo(() => jobs.map((job) => job.id), [jobs]);
+  const linkedAccountIdKey = useMemo(() => jobSelectionIndex.map((job) => job.id).join(","), [jobSelectionIndex]);
   const smsProviderDefinitions = Array.isArray(features.smsProviders) ? features.smsProviders : [];
   const activeSmsProvider = useMemo(
     () => resolveSmsProvider(smsProviderDefinitions, smsSettings),
@@ -221,6 +228,40 @@ function App() {
   const passwordAddSelectedCount = selectedJobs.filter((job) => job.canAddPassword).length;
   const canAddPasswordSelected = selectedJobs.length > 0 && selectedJobs.length === selectedJobIds.size
     && passwordAddSelectedCount > 0;
+
+  useEffect(() => {
+    if (!token || !features.linkedAccounts) return undefined;
+    const ids = linkedAccountIdKey ? linkedAccountIdKey.split(",").filter(Boolean) : [];
+    if (!ids.length) {
+      setLinkedAccountDetails({});
+      setLinkedAccountLoading(false);
+      return undefined;
+    }
+    let stopped = false;
+    setLinkedAccountLoading(true);
+    setLinkedAccountError("");
+    apiFetch(token, "/api/linked-accounts", {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    }).then((data) => {
+      if (stopped) return;
+      const next = {};
+      for (const item of Array.isArray(data.items) ? data.items : []) next[item.id] = item;
+      setLinkedAccountDetails(next);
+      setLinkedAccountUpdatedAt(Date.now());
+    }).catch((requestError) => {
+      if (!stopped) setLinkedAccountError(requestError.message);
+    }).finally(() => {
+      if (!stopped) setLinkedAccountLoading(false);
+    });
+    return () => {
+      stopped = true;
+    };
+  }, [token, features.linkedAccounts, linkedAccountIdKey, linkedAccountRevision]);
+
+  useEffect(() => {
+    if (!selectedJobIds.size) setBulkActionsOpen(false);
+  }, [selectedJobIds.size]);
 
   function openSmsSettings() {
     const draft = withSmsProviderDefaults(smsProviderDefinitions, smsSettings);
@@ -719,70 +760,14 @@ function App() {
             <h2>授权任务</h2>
             <p>{emailFilter.length
               ? `匹配 ${pagination.total} 条，共 ${pagination.totalAll ?? pagination.total} 条任务`
-              : (pagination.total ? `共 ${pagination.total} 条任务` : "添加邮箱后开始第一条任务")}</p>
+              : (pagination.total ? `共 ${pagination.total} 条任务` : "使用批量添加任务导入账号")}</p>
           </div>
-          <form className="add-form" onSubmit={createJob}>
-            <div className="email-field">
-              <Mail size={17} aria-hidden="true" />
-              <input
-                type="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder="输入邮箱地址"
-                autoComplete="email"
-                aria-label="邮箱地址"
-                required
-              />
-            </div>
-            <button className="primary-button" type="submit" disabled={!token || busy}>
-              {busy ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />}
-              添加任务
-            </button>
-            <button className="secondary-button" type="button" onClick={() => { setBatchError(""); setBatchOpen(true); }} disabled={!token}>
+          <div className="add-form batch-only-form">
+            <button className="primary-button batch-add-button" type="button" onClick={() => { setBatchError(""); setBatchOpen(true); }} disabled={!token}>
               <ListPlus size={17} />
-              批量添加
+              批量添加任务
             </button>
-            <button
-              className={`secondary-button ${emailFilter.length ? "filter-active" : ""}`}
-              type="button"
-              onClick={() => { setFilterError(""); setFilterText(emailFilter.join("\n")); setFilterOpen(true); }}
-              disabled={!token}
-            >
-              <Filter size={17} />
-              {emailFilter.length ? `筛选 ${emailFilter.length}` : "筛选账号"}
-            </button>
-            {emailFilter.length > 0 && (
-              <button className="selection-text-button clear-filter-button" type="button" onClick={clearEmailFilter}>
-                清除筛选
-              </button>
-            )}
-          </form>
-        </div>
-
-        <div className="provider-toolbar sms-provider-toolbar" aria-label="接码平台配置">
-          <div className="provider-heading"><PhoneIncoming size={17} /><strong>接码平台</strong></div>
-          <span className="provider-name">{activeSmsProvider.name || "未选择"}</span>
-          <span className={`provider-ready ${activeSmsProvider.ready ? "" : "incomplete"}`}>
-            {activeSmsProvider.ready ? <Check size={14} /> : <CircleAlert size={14} />}
-            {activeSmsProvider.ready
-              ? (activeSmsProvider.summary ? `已配置 · ${activeSmsProvider.summary}` : "已配置")
-              : "未完成配置"}
-          </span>
-          <button type="button" className="secondary-button provider-settings-button" onClick={openSmsSettings} disabled={!smsProviderDefinitions.length}>
-            <Settings2 size={16} />配置
-          </button>
-        </div>
-
-        <div className="provider-toolbar mail-request-toolbar" aria-label="邮件接码请求配置">
-          <div className="provider-heading"><MailCheck size={17} /><strong>邮件 API</strong></div>
-          <span className="provider-name">{mailRequestSettings.method}</span>
-          <span className="provider-ready">
-            <Check size={14} />
-            {formatMailRequestSummary(mailRequestSettings)}
-          </span>
-          <button type="button" className="secondary-button provider-settings-button" onClick={openMailRequestSettings} disabled={!token}>
-            <Settings2 size={16} />配置
-          </button>
+          </div>
         </div>
 
         <div className="provider-toolbar sub2api-toolbar" aria-label="Sub2API 配置与号池监控">
@@ -851,6 +836,17 @@ function App() {
           </a>
         </div>
 
+        {features.linkedAccounts && jobSelectionIndex.length > 0 && (
+          <AccountSummary
+            jobs={jobSelectionIndex}
+            details={linkedAccountDetails}
+            loading={linkedAccountLoading}
+            error={linkedAccountError}
+            updatedAt={linkedAccountUpdatedAt}
+            onRefresh={() => setLinkedAccountRevision((current) => current + 1)}
+          />
+        )}
+
         {error && (
           <div className="global-error" role="alert">
             <CircleAlert size={17} />
@@ -893,40 +889,52 @@ function App() {
                 {batchAction === "download" ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
                 批量下载
               </button>
-              {features.sub2apiUpload && (
-                <button type="button" className="secondary-button bulk-button" onClick={() => uploadSelected([...selectedJobIds])} disabled={!canUploadSelected || Boolean(batchAction)}>
-                  {batchAction === "upload" ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}
-                  上传到 Sub2API
-                </button>
-              )}
-              {features.sourceExport && (
-                <button type="button" className="secondary-button bulk-button" onClick={exportSelectedSource} disabled={!selectedJobIds.size || Boolean(batchAction)}>
-                  {batchAction === "source" ? <LoaderCircle className="spin" size={16} /> : <FileText size={16} />}
-                  导出原始信息
-                </button>
-              )}
-              <button type="button" className="regenerate-button bulk-button" onClick={reauthorizeSelected} disabled={!canReauthorizeSelected || Boolean(batchAction)}>
-                {batchAction === "reauthorize" ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
-                批量重新授权
+              <button
+                type="button"
+                className="bulk-more-toggle"
+                aria-expanded={bulkActionsOpen}
+                aria-controls="bulk-advanced-actions"
+                onClick={() => setBulkActionsOpen((current) => !current)}
+              >
+                {bulkActionsOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                {bulkActionsOpen ? "收起更多操作" : "更多批量操作"}
               </button>
-              {features.forceRelogin && (
-                <button type="button" className="relogin-button bulk-button" onClick={forceReloginSelected} disabled={!canForceReloginSelected || Boolean(batchAction)}>
-                  {batchAction === "relogin" ? <LoaderCircle className="spin" size={16} /> : <LogIn size={16} />}
-                  批量重新登录并授权
+              <div id="bulk-advanced-actions" className={`bulk-advanced-actions${bulkActionsOpen ? " open" : ""}`}>
+                {features.sub2apiUpload && (
+                  <button type="button" className="secondary-button bulk-button" onClick={() => uploadSelected([...selectedJobIds])} disabled={!canUploadSelected || Boolean(batchAction)}>
+                    {batchAction === "upload" ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}
+                    上传到 Sub2API
+                  </button>
+                )}
+                {features.sourceExport && (
+                  <button type="button" className="secondary-button bulk-button" onClick={exportSelectedSource} disabled={!selectedJobIds.size || Boolean(batchAction)}>
+                    {batchAction === "source" ? <LoaderCircle className="spin" size={16} /> : <FileText size={16} />}
+                    导出原始信息
+                  </button>
+                )}
+                <button type="button" className="regenerate-button bulk-button" onClick={reauthorizeSelected} disabled={!canReauthorizeSelected || Boolean(batchAction)}>
+                  {batchAction === "reauthorize" ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
+                  批量重新授权
                 </button>
-              )}
-              {features.totpSetup && (
-                <button type="button" className="secondary-button bulk-button" onClick={setupTotpSelected} disabled={!canSetupTotpSelected || Boolean(batchAction)}>
-                  {batchAction === "setup-2fa" ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}
-                  批量设置 2FA
-                </button>
-              )}
-              {features.passwordAdd && (
-                <button type="button" className="secondary-button bulk-button" onClick={addPasswordSelected} disabled={!canAddPasswordSelected || Boolean(batchAction)}>
-                  {batchAction === "add-password" ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}
-                  批量添加密码
-                </button>
-              )}
+                {features.forceRelogin && (
+                  <button type="button" className="relogin-button bulk-button" onClick={forceReloginSelected} disabled={!canForceReloginSelected || Boolean(batchAction)}>
+                    {batchAction === "relogin" ? <LoaderCircle className="spin" size={16} /> : <LogIn size={16} />}
+                    批量重新登录并授权
+                  </button>
+                )}
+                {features.totpSetup && (
+                  <button type="button" className="secondary-button bulk-button" onClick={setupTotpSelected} disabled={!canSetupTotpSelected || Boolean(batchAction)}>
+                    {batchAction === "setup-2fa" ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}
+                    批量设置 2FA
+                  </button>
+                )}
+                {features.passwordAdd && (
+                  <button type="button" className="secondary-button bulk-button" onClick={addPasswordSelected} disabled={!canAddPasswordSelected || Boolean(batchAction)}>
+                    {batchAction === "add-password" ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}
+                    批量添加密码
+                  </button>
+                )}
+              </div>
               <button type="button" className="delete-button" onClick={deleteSelected} disabled={!selectedJobIds.size || Boolean(batchAction)}>
                 {batchAction === "delete" ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}
                 批量删除
@@ -977,6 +985,9 @@ function App() {
                     passwordAddAvailable={Boolean(features.passwordAdd)}
                     forceReloginAvailable={Boolean(features.forceRelogin)}
                     accountProxyUrl={accountProxyUrl}
+                    linkedAccountEnabled={Boolean(features.linkedAccounts)}
+                    linkedAccount={linkedAccountDetails[job.id]}
+                    linkedAccountLoading={linkedAccountLoading}
                   />
                   {expandedJobId === job.id && (
                     <tr className="log-row">
@@ -1396,7 +1407,7 @@ function App() {
           <form className="batch-dialog" onSubmit={createBatch} role="dialog" aria-modal="true" aria-labelledby="batch-title">
             <div className="dialog-header">
               <div>
-                <h2 id="batch-title">批量添加账号</h2>
+                <h2 id="batch-title">批量添加任务</h2>
                 <span>{countBatchLines(batchText)} 条，超出并发上限后自动排队</span>
               </div>
               <button type="button" className="icon-button" onClick={() => setBatchOpen(false)} disabled={batchBusy} title="关闭">
@@ -1480,11 +1491,98 @@ function EmptyState({ filtered = false }) {
   );
 }
 
-function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggleSelected, selectionSupported, smsProviderAvailable, smsProvider, onUpload, sub2apiUploadAvailable, totpSetupAvailable, passwordAddAvailable, forceReloginAvailable, accountProxyUrl }) {
+function quotaAmount(value) {
+  return typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(2)}` : "暂无";
+}
+
+function accountIsOnline(item) {
+  return item?.status === "ready"
+    && item.accountStatus === "active"
+    && item.schedulable === true
+    && !item.deleting
+    && !item.reauthRequired;
+}
+
+function accountNeedsReauth(job, item) {
+  return job.status === "reauth_required" || item?.reauthRequired === true;
+}
+
+function quotaPair(item) {
+  const quota = item?.quota;
+  if (!quota || (quota.total === null && quota.used === null)) return "";
+  const used = quotaAmount(quota.used);
+  return quota.total === 0 ? `已用 ${used} / 不限额` : `已用 ${used} / ${quotaAmount(quota.total)}`;
+}
+
+function AccountHealth({ job, item, loading }) {
+  if (loading && !item) return <div className="account-health"><span className="account-health-pending">读取账号状态…</span></div>;
+  if (!item) return null;
+  const linked = item.status === "ready";
+  const online = accountIsOnline(item);
+  const reauth = accountNeedsReauth(job, item);
+  const statusText = item.status === "unlinked"
+    ? "未关联"
+    : item.status === "missing"
+      ? "账号已删除"
+      : item.status === "error"
+        ? "读取失败"
+        : item.deleting
+          ? "删除处理中"
+          : online ? "在线" : "离线";
+  return (
+    <div className="account-health" title={item.error || ""}>
+      <span className={`account-health-pill ${online ? "online" : "offline"}`}>{statusText}</span>
+      <span className={`account-health-pill ${reauth ? "reauth" : linked ? "authorized" : "pending"}`}>
+        {reauth ? "需重新授权" : linked ? "授权正常" : "未关联"}
+      </span>
+      {quotaPair(item) && <span className="account-quota-chip">{quotaPair(item)}</span>}
+    </div>
+  );
+}
+
+function AccountSummary({ jobs, details, loading, error, updatedAt, onRefresh }) {
+  const items = jobs.map((job) => ({ job, item: details[job.id] })).filter(({ item }) => item);
+  const onlineCount = items.filter(({ item }) => accountIsOnline(item)).length;
+  const reauthCount = items.filter(({ job, item }) => accountNeedsReauth(job, item)).length;
+  const quotaItems = items.map(({ item }) => item.quota).filter((quota) => quota && (quota.total !== null || quota.used !== null));
+  const usedValues = quotaItems.map((quota) => quota.used).filter((value) => typeof value === "number" && Number.isFinite(value));
+  const totalValues = quotaItems.map((quota) => quota.total).filter((value) => typeof value === "number" && Number.isFinite(value));
+  const hasOnlyUnlimited = totalValues.length > 0 && totalValues.every((value) => value === 0);
+  const totalQuota = totalValues.length ? (hasOnlyUnlimited ? "不限额" : quotaAmount(totalValues.reduce((sum, value) => sum + value, 0))) : "暂无";
+  const usedQuota = usedValues.length ? quotaAmount(usedValues.reduce((sum, value) => sum + value, 0)) : "暂无";
+  return (
+    <section className="account-summary" aria-label="账号概览">
+      <div className="account-summary-header">
+        <div>
+          <h3>账号概览</h3>
+          <p>{loading ? "正在同步账号状态和额度…" : updatedAt ? `更新于 ${new Date(updatedAt).toLocaleTimeString()}` : "等待同步账号数据"}</p>
+        </div>
+        <button type="button" className="secondary-button account-summary-refresh" onClick={onRefresh} disabled={loading}>
+          <RefreshCw size={15} className={loading ? "spin" : ""} />刷新账号数据
+        </button>
+      </div>
+      <div className="account-summary-grid">
+        <div><span>账号总数</span><strong>{jobs.length}</strong></div>
+        <div><span>当前在线</span><strong className="online-value">{onlineCount}</strong></div>
+        <div><span>待重新授权</span><strong className={reauthCount ? "reauth-value" : ""}>{reauthCount}</strong></div>
+        <div><span>总额度</span><strong>{totalQuota}</strong></div>
+        <div><span>已使用额度</span><strong>{usedQuota}</strong></div>
+      </div>
+      {error && <div className="account-summary-error" role="alert">账号状态读取失败：{error}；可点击刷新重试。</div>}
+    </section>
+  );
+}
+
+function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggleSelected, selectionSupported, smsProviderAvailable, smsProvider, onUpload, sub2apiUploadAvailable, totpSetupAvailable, passwordAddAvailable, forceReloginAvailable, accountProxyUrl, linkedAccountEnabled, linkedAccount, linkedAccountLoading }) {
+  const terminal = ["completed", "failed", "canceled", "reauth_required", "resume_available"].includes(job.status);
   const [value, setValue] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [mobileCollapsed, setMobileCollapsed] = useState(terminal);
 
   useEffect(() => setValue(""), [job.status]);
+  useEffect(() => {
+    if (!terminal) setMobileCollapsed(false);
+  }, [terminal]);
 
   async function sendInput(action, submittedValue = value) {
     setSubmitting(true);
@@ -1627,11 +1725,10 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
   }
 
   const inputConfig = getInputConfig(job.status, job.currentPhone);
-  const terminal = ["completed", "failed", "canceled", "reauth_required", "resume_available"].includes(job.status);
 
   return (
-    <tr className={`job-row status-${job.status}`}>
-      <td className="select-cell">
+    <tr className={`job-row status-${job.status}${mobileCollapsed ? " mobile-collapsed" : ""}`}>
+      <td className="select-cell" data-label="选择">
         <input
           type="checkbox"
           checked={selected}
@@ -1640,15 +1737,24 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
           aria-label={`选择 ${job.email}`}
         />
       </td>
-      <td>
+      <td data-label="账号">
         <div className="account-cell">
           <div className="account-avatar">{job.email.slice(0, 1).toUpperCase()}</div>
-          <div className="account-details"><strong>{job.email}</strong><span>{shortId(job.id)}</span></div>
+          <div className="account-details">
+            <strong>{job.email}</strong>
+            <span>{shortId(job.id)}</span>
+            {linkedAccountEnabled && <AccountHealth job={job} item={linkedAccount} loading={linkedAccountLoading} />}
+            <div className="mobile-job-status"><StatusBadge status={job.status} /></div>
+            <button type="button" className="account-collapse-toggle" onClick={() => setMobileCollapsed((current) => !current)} aria-expanded={!mobileCollapsed}>
+              {mobileCollapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+              {mobileCollapsed ? "展开详情" : "收起详情"}
+            </button>
+          </div>
           <LoginMethodBadge job={job} />
         </div>
       </td>
-      <td><StatusBadge status={job.status} /></td>
-      <td className="step-cell">
+      <td data-label="状态"><StatusBadge status={job.status} /></td>
+      <td className="step-cell" data-label="当前操作">
         <div className="prompt-line">{job.prompt}</div>
         {job.lastError && <div className="row-error">{extractResponseMessage(job.lastError)}</div>}
         {job.autoRepairBlocked && (
@@ -1735,12 +1841,12 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
           </div>
         )}
       </td>
-      <td className="time-cell"><time dateTime={job.createdAt}>{formatDateTime(job.createdAt)}</time></td>
-      <td className="operation-time-cell">
+      <td className="time-cell" data-label="开始时间"><time dateTime={job.createdAt}>{formatDateTime(job.createdAt)}</time></td>
+      <td className="operation-time-cell" data-label="最近操作">
         <time dateTime={job.lastOperationAt || job.createdAt}>{formatDateTime(job.lastOperationAt || job.createdAt)}</time>
         <span>{operationLabel(job.lastOperationType)}</span>
       </td>
-      <td>
+      <td className="actions-cell" data-label="操作">
         <div className="row-actions">
           {job.canDownload && (
             <button type="button" className="download-button" onClick={download}>
@@ -1765,12 +1871,12 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
             </button>
           )}
           {totpSetupAvailable && job.canSetupTotp && (
-            <button type="button" className="icon-button" onClick={setupTotp} disabled={submitting} title="设置 2FA">
+            <button type="button" className="icon-button" onClick={setupTotp} disabled={submitting} title="设置 2FA" aria-label="设置 2FA">
               {submitting ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}
             </button>
           )}
           {passwordAddAvailable && job.canAddPassword && (
-            <button type="button" className="icon-button" onClick={addPassword} disabled={submitting} title="添加密码">
+            <button type="button" className="icon-button" onClick={addPassword} disabled={submitting} title="添加密码" aria-label="添加密码">
               {submitting ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}
             </button>
           )}
@@ -1780,7 +1886,7 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
               {job.securityCheckRequired ? "手动重试" : job.canResume ? "继续流程" : "重新授权"}
             </button>
           )}
-          <button type="button" className="icon-button" onClick={onToggleLogs} title={expanded ? "收起日志" : "查看日志"}>
+          <button type="button" className="icon-button" onClick={onToggleLogs} title={expanded ? "收起日志" : "查看日志"} aria-label={expanded ? "收起日志" : "查看日志"}>
             <FileText size={17} />
             {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
           </button>

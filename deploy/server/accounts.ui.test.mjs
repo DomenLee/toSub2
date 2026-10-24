@@ -18,7 +18,7 @@ export async function testUI(directory) {
     if (endpoint === "/api/bootstrap") result = { token: "FAKE_CONSOLE_TOKEN", features: { bulkActions: true, linkedAccounts: true } };
     else if (endpoint === "/api/jobs/query" || String(endpoint).startsWith("/api/jobs?")) result = { jobs, selection: jobs, stats: { active: 0, queued: 0, completed: jobs.length }, pagination: { page: 1, totalPages: 1, total: jobs.length } };
     else if (endpoint === "/api/auto-sync") result = { items: [], repair: { enabled: false } };
-    else if (endpoint === "/api/linked-accounts") result = { items: body.ids.map(id => ({ id, email: jobs.find(job => job.id === id)?.email, accountID: id.endsWith("1") ? 42 : 43, status: "ready", groups: [{ id: 7, name: "Test Pool" }], userCost: statsFail ? null : 12.345678, statsError: statsFail ? "累计扣费读取失败，请点击刷新重试" : "" })) };
+    else if (endpoint === "/api/linked-accounts") result = { items: body.ids.map(id => ({ id, email: jobs.find(job => job.id === id)?.email, accountID: id.endsWith("1") ? 42 : 43, status: "ready", accountStatus: "active", schedulable: true, reauthRequired: false, quota: { total: 100, used: 12.5, dailyTotal: null, dailyUsed: null, weeklyTotal: null, weeklyUsed: null }, groups: [{ id: 7, name: "Test Pool" }], userCost: statsFail ? null : 12.345678, statsError: statsFail ? "累计扣费读取失败，请点击刷新重试" : "" })) };
     else if (endpoint === "/api/jobs/delete-batch") {
       deletedRequests.push(body);
       result = { deleted: 1, failed: 1, results: [{ id: jobs[0].id, email: jobs[0].email, accountID: 42, deleted: true, remoteDeleted: true }, { id: jobs[1].id, email: jobs[1].email, accountID: 43, deleted: false, error: "本项目接口返回 HTTP 503；请核对该账号后重试删除" }] };
@@ -36,8 +36,29 @@ export async function testUI(directory) {
   const button = text => [...document.querySelectorAll("button")].find(item => item.textContent.trim() === text);
   try {
     dom.window.eval(await fs.readFile(path.join(assets, bundle), "utf8"));
-    await until(() => button("分组 / 累计扣费"));
-    button("分组 / 累计扣费").click();
+    await until(() => button("批量添加任务"));
+    assert.equal(button("添加任务"), undefined, "single task creation must stay hidden");
+    assert.equal(button("筛选账号"), undefined, "email filter entry must stay hidden");
+    assert.equal(document.querySelector('[aria-label="接码平台配置"]'), null, "SMS provider toolbar must stay hidden");
+    assert.equal(document.querySelector('[aria-label="邮件接码请求配置"]'), null, "mail API toolbar must stay hidden");
+    await until(() => button("更多批量操作"));
+    button("更多批量操作").click();
+    await until(() => document.querySelector(".bulk-advanced-actions")?.classList.contains("open"));
+    assert.equal(document.querySelector(".bulk-advanced-actions")?.classList.contains("open"), true, "bulk actions should expand on demand");
+    button("收起更多操作").click();
+    await until(() => !document.querySelector(".bulk-advanced-actions")?.classList.contains("open"));
+    assert.equal(document.querySelector(".bulk-advanced-actions")?.classList.contains("open"), false, "bulk actions should collapse again");
+    await until(() => document.querySelector(".job-row.mobile-collapsed"));
+    const firstJobRow = document.querySelector(".job-row");
+    firstJobRow.querySelector("button.account-collapse-toggle").click();
+    await until(() => !firstJobRow.classList.contains("mobile-collapsed"));
+    firstJobRow.querySelector("button.account-collapse-toggle").click();
+    await until(() => firstJobRow.classList.contains("mobile-collapsed"));
+    await until(() => button("账号详情"));
+    assert.match(document.querySelector('[aria-label="账号概览"]').textContent, /当前在线2/);
+    assert.match(document.querySelector('[aria-label="账号概览"]').textContent, /已使用额度\$25\.00/);
+    await until(() => button("账号详情"));
+    button("账号详情").click();
     await until(() => document.querySelector('[role="dialog"]')?.textContent.includes("12.345678"));
     assert.match(document.querySelector('[role="dialog"]').textContent, /Test Pool/);
     statsFail = true;

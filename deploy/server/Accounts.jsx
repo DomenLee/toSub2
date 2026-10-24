@@ -35,9 +35,24 @@ function Modal({ title, children, busy, onClose }) {
 }
 
 function Summary({ item }) {
+  const online = item.status === "ready"
+    && item.accountStatus === "active"
+    && item.schedulable === true
+    && !item.deleting
+    && !item.reauthRequired;
+  const needsReauth = item.reauthRequired === true;
+  const quota = item.quota || {};
+  const hasQuota = quota.total !== null && quota.total !== undefined || quota.used !== null && quota.used !== undefined;
+  const quotaAmount = value => typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(2)}` : "暂无";
   return <div style={{ marginTop: 10, padding: 12, border: "1px solid #d4dcda", borderRadius: 6, overflowWrap: "anywhere" }}>
     <strong>{item.email} · {item.accountID ? `账号 #${item.accountID}` : "未绑定账号"}</strong>
     {item.status === "ready" && <>
+      <div className="linked-account-detail-grid">
+        <div><span>当前状态</span><strong className={online ? "online" : "offline"}>{online ? "在线" : "离线 / 不可用"}</strong></div>
+        <div><span>重新授权</span><strong className={needsReauth ? "reauth" : "authorized"}>{needsReauth ? "需要重新授权" : "授权正常"}</strong></div>
+        <div><span>总额度</span><strong>{hasQuota ? (quota.total === 0 ? "不限额" : quotaAmount(quota.total)) : "暂无数据"}</strong></div>
+        <div><span>已使用额度</span><strong>{hasQuota ? quotaAmount(quota.used) : "暂无数据"}</strong></div>
+      </div>
       <div style={{ marginTop: 6 }}>所属分组：{item.groups.length ? item.groups.map(group => `${group.name}（#${group.id}）`).join("、") : "未加入分组"}</div>
       <div>用户累计扣费：{item.userCost === null || item.userCost === undefined ? "暂不可用" : `$${item.userCost.toFixed(6)}`}</div>
       <small>统计本账号现存历史用量日志的实际扣费，不是账号成本；不包含已清理的日志和影子账号用量。</small>
@@ -68,7 +83,7 @@ export function LinkedAccount({ token, job }) {
     return () => controller.abort();
   }, [open, token, job.id, job.email, revision]);
   return <>
-    <button type="button" className="selection-text-button" disabled={!token} onClick={() => setOpen(true)}>分组 / 累计扣费</button>
+    <button type="button" className="selection-text-button" disabled={!token} onClick={() => setOpen(true)}>账号详情</button>
     {open && <Modal title="关联账号详情" onClose={() => setOpen(false)}>
       {loading && <p role="status">正在读取 {job.email} 的关联账号…</p>}
       {error && <p className="dialog-error" role="alert">{error}</p>}
