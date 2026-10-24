@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createAccounts } from "./accounts.mjs";
 import { createSync } from "./sync.mjs";
+import { accountState, configuredQuota } from "../../web/src/account-state.js";
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "tosub2-accounts-"));
 const email = "account@example.invalid";
@@ -54,10 +55,21 @@ async function fixture({ linked = true, remoteMissing = false, mismatch = false,
 }
 
 try {
+  assert.equal(accountState({ status: "working" }, { status: "unlinked" }).label, "待完成授权");
+  assert.equal(accountState({ status: "completed" }, { status: "unlinked" }).label, "待同步");
+  assert.equal(accountState({}, { status: "unlinked", syncStatus: "failed" }).label, "同步失败");
+  assert.equal(accountState({}, { status: "missing" }).attention, true);
+  assert.equal(accountState({}, { status: "error", accountID: 42 }).label, "读取失败");
+  assert.deepEqual(configuredQuota([{ status: "ready", quota: { supported: false, total: 100 } }], "total"), { text: "未提供", count: 0 });
+  assert.deepEqual(configuredQuota([{ status: "ready", quota: { total: 100 } }, { status: "ready", quota: { total: 0 } }], "total"), { text: "含不限额", count: 2 });
+  assert.deepEqual(configuredQuota([{ status: "ready", quota: { used: 2 } }, { status: "error" }], "used"), { text: "$2.00", count: 1 });
   const valid = await fixture();
   const details = await valid.accounts.details([valid.job]);
   assert.equal(details[0].userCost, 1.234567);
-  assert.deepEqual(details[0].quota, { total: 100, used: 12.5, dailyTotal: null, dailyUsed: null, weeklyTotal: null, weeklyUsed: null });
+  assert.deepEqual(details[0].quota, { supported: false, total: null, used: null }, "OAuth quota must not be inferred from generic account fields");
+  const callsBeforeSummary = valid.calls.filter(call => call.endpoint.includes("/usage/stats?")).length;
+  await valid.accounts.details([valid.job], false);
+  assert.equal(valid.calls.filter(call => call.endpoint.includes("/usage/stats?")).length, callsBeforeSummary, "summary polling must not query lifetime usage stats");
   assert.equal(details[0].schedulable, true);
   assert.deepEqual(details[0].groups, [{ id: 7, name: "Main" }, { id: 8, name: "Backup" }]);
   assert.equal(JSON.stringify(details).includes("FAKE_"), false);
@@ -71,7 +83,11 @@ try {
   assert.equal(localOnly.calls.length, 0);
 
   const mismatch = await fixture({ mismatch: true });
-  assert.equal((await mismatch.accounts.details([mismatch.job]))[0].status, "error");
+  const mismatchInfo = (await mismatch.accounts.details([mismatch.job]))[0];
+  assert.equal(mismatchInfo.status, "error");
+  assert.equal(mismatchInfo.code, "binding_mismatch");
+  assert.equal(mismatchInfo.accountID, 42);
+  assert.doesNotMatch(mismatchInfo.error, /未执行删除/);
   assert.equal((await mismatch.accounts.remove([mismatch.job], true, [{ id: mismatch.job.id, accountID: 42 }])).failed, 1);
   assert.equal(mismatch.local.length, 0);
   assert.equal(mismatch.calls.some(call => call.options.method === "DELETE"), false);

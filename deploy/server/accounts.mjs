@@ -6,7 +6,9 @@ const emailOf = account => String(account?.credentials?.email || account?.extra?
 const numberOrNull = value => typeof value === "number" && Number.isFinite(value) ? value : null;
 
 function quotaOf(account) {
+  if (account.type === "oauth") return { supported: false, total: null, used: null };
   return {
+    supported: true,
     total: numberOrNull(account?.quota_limit),
     used: numberOrNull(account?.quota_used),
     dailyTotal: numberOrNull(account?.quota_daily_limit),
@@ -40,8 +42,9 @@ export function createAccounts({ jobs, sync, request, lock, removeLocal, now = (
 
   async function inspect(job) {
     const accountID = binding(job);
-    const base = { id: job.id, email: job.email, accountID };
-    if (!accountID) return { ...base, status: "unlinked", message: "未绑定本项目账号，仅删除本地任务" };
+    const entry = sync.status().find(item => item.id === job.id);
+    const base = { id: job.id, email: job.email, accountID, syncStatus: entry?.status };
+    if (!accountID) return { ...base, status: "unlinked", message: entry?.status === "failed" ? `同步失败：${entry.error || "服务暂不可用"}；请在自动同步面板重试。` : job.status === "completed" ? "授权已完成，等待自动同步；持续未完成请在同步面板检查并重试。" : "完成授权后将自动关联账号，可展开任务查看进度。" };
     let workspace = sync.workspace(job.id);
     if (!workspace) {
       try {
@@ -49,15 +52,15 @@ export function createAccounts({ jobs, sync, request, lock, removeLocal, now = (
         if (output.accounts?.length === 1 && emailOf(output.accounts[0]) === job.email.toLowerCase()) workspace = workspaceOf(output.accounts[0]);
       } catch {}
     }
-    if (!workspace || workspace.startsWith("authsess_")) throw new Error("缺少可信的真实工作区绑定，请先核对同步记录；禁止仅按邮箱删除");
+    if (!workspace || workspace.startsWith("authsess_")) throw Object.assign(new Error("缺少可信的工作区绑定，请先在 Sub2API 核对账号与同步记录。"), { code: "binding_mismatch" });
     let account;
     try { account = await request(`/api/v1/admin/accounts/${accountID}`); }
     catch (error) {
-      if (error.status === 404) return { ...base, status: "missing", message: "本项目账号已不存在，确认后仅清理本地任务" };
+      if (error.status === 404) return { ...base, status: "missing", message: "关联账号已不存在，请先在 Sub2API 核对；确认后可清理本地任务。" };
       throw error;
     }
     if (account?.id !== accountID || account.platform !== "openai" || account.type !== "oauth" || account.parent_account_id || emailOf(account) !== job.email.toLowerCase() || workspaceOf(account) !== workspace) {
-      throw new Error("账号编号、邮箱或真实工作区与任务不一致，请先在 Sub2API 核对绑定，未执行删除");
+      throw Object.assign(new Error("账号编号、邮箱或工作区与任务不一致，请先在 Sub2API 核对绑定，再刷新账号详情。"), { code: "binding_mismatch" });
     }
     return {
       ...base,
@@ -68,6 +71,7 @@ export function createAccounts({ jobs, sync, request, lock, removeLocal, now = (
       reauthRequired: reauthRequiredOf(account),
       quota: quotaOf(account),
       deleting: sync.isDeleting(job.id),
+      message: entry?.status === "failed" ? `凭据同步失败：${entry.error || "服务暂不可用"}；请在自动同步面板重试。` : undefined,
     };
   }
 
@@ -86,13 +90,13 @@ export function createAccounts({ jobs, sync, request, lock, removeLocal, now = (
         return { ...item, userCost: null, statsError: "累计扣费读取失败，请点击刷新重试；不影响已确认账号的删除" };
       }
     } catch (error) {
-      return { id: job.id, email: job.email, accountID: binding(job), status: "error", error: String(error.message || "关联账号读取失败，请刷新后重试") };
+      return { id: job.id, email: job.email, accountID: binding(job), status: "error", code: error.code === "binding_mismatch" ? error.code : "read_failed", error: `${String(error.message || "关联账号读取失败")}；请核对该账号后刷新重试。` };
     }
   }
 
-  async function details(selected) {
+  async function details(selected, includeStats = true) {
     const result = [];
-    for (let offset = 0; offset < selected.length; offset += 4) result.push(...await Promise.all(selected.slice(offset, offset + 4).map(job => detail(job))));
+    for (let offset = 0; offset < selected.length; offset += 4) result.push(...await Promise.all(selected.slice(offset, offset + 4).map(job => detail(job, includeStats))));
     return result;
   }
 

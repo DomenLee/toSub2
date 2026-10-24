@@ -1,4 +1,6 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import Dialog from "./Dialog.jsx";
+import { accountIsOnline, accountNeedsReauth, accountState, configuredQuota } from "./account-state.js";
 import { createRoot } from "react-dom/client";
 import {
   Ban,
@@ -199,6 +201,9 @@ function App() {
 
   const pageJobIds = useMemo(() => jobs.map((job) => job.id), [jobs]);
   const linkedAccountIdKey = useMemo(() => jobSelectionIndex.map((job) => job.id).join(","), [jobSelectionIndex]);
+  const linkedAccountStateKey = useMemo(() => jobSelectionIndex.map((job) => `${job.id}:${job.status}`).join(","), [jobSelectionIndex]);
+  const refreshLinkedAccounts = useCallback(() => setLinkedAccountRevision((current) => current + 1), []);
+  const accountIssueCount = jobSelectionIndex.filter((job) => accountState(job, linkedAccountDetails[job.id]).attention).length;
   const smsProviderDefinitions = Array.isArray(features.smsProviders) ? features.smsProviders : [];
   const activeSmsProvider = useMemo(
     () => resolveSmsProvider(smsProviderDefinitions, smsSettings),
@@ -237,27 +242,37 @@ function App() {
       setLinkedAccountLoading(false);
       return undefined;
     }
-    let stopped = false;
-    setLinkedAccountLoading(true);
-    setLinkedAccountError("");
-    apiFetch(token, "/api/linked-accounts", {
-      method: "POST",
-      body: JSON.stringify({ ids }),
-    }).then((data) => {
-      if (stopped) return;
-      const next = {};
-      for (const item of Array.isArray(data.items) ? data.items : []) next[item.id] = item;
-      setLinkedAccountDetails(next);
-      setLinkedAccountUpdatedAt(Date.now());
-    }).catch((requestError) => {
-      if (!stopped) setLinkedAccountError(requestError.message);
-    }).finally(() => {
-      if (!stopped) setLinkedAccountLoading(false);
-    });
-    return () => {
-      stopped = true;
+    const controller = new AbortController();
+    let timer;
+    const refresh = async () => {
+      setLinkedAccountLoading(true);
+      try {
+        const data = await apiFetch(token, "/api/linked-accounts", {
+          method: "POST",
+          body: JSON.stringify({ ids, includeStats: false }),
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted) return;
+        const next = {};
+        for (const item of Array.isArray(data.items) ? data.items : []) next[item.id] = item;
+        setLinkedAccountDetails(next);
+        setLinkedAccountError("");
+        setLinkedAccountUpdatedAt(Date.now());
+      } catch (requestError) {
+        if (!controller.signal.aborted) setLinkedAccountError(requestError.message);
+      } finally {
+        if (!controller.signal.aborted) {
+          setLinkedAccountLoading(false);
+          timer = window.setTimeout(refresh, 15_000);
+        }
+      }
     };
-  }, [token, features.linkedAccounts, linkedAccountIdKey, linkedAccountRevision]);
+    void refresh();
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [token, features.linkedAccounts, linkedAccountIdKey, linkedAccountStateKey, linkedAccountRevision]);
 
   useEffect(() => {
     if (!selectedJobIds.size) setBulkActionsOpen(false);
@@ -843,7 +858,7 @@ function App() {
             loading={linkedAccountLoading}
             error={linkedAccountError}
             updatedAt={linkedAccountUpdatedAt}
-            onRefresh={() => setLinkedAccountRevision((current) => current + 1)}
+            onRefresh={refreshLinkedAccounts}
           />
         )}
 
@@ -863,18 +878,18 @@ function App() {
         )}
 
         {features.bulkActions && jobs.length > 0 && (
-          <div className="selection-toolbar">
+          <div className={`selection-toolbar${selectedJobIds.size ? "" : " no-selection"}`}>
             <div className="selection-summary">
-              <span>当前页 {jobs.length} 条，跨页已选 {selectedJobIds.size} 条，可下载 {downloadableSelectedCount} 条</span>
+              <span>{selectedJobIds.size ? `已选 ${selectedJobIds.size} 条 · 可下载 ${downloadableSelectedCount} 条` : `当前页 ${jobs.length} 条`}</span>
               <button type="button" className="selection-text-button" onClick={toggleAllOnPage} disabled={allPageSelected || !pageJobIds.length}>
                 本页全选
               </button>
-              <button type="button" className="selection-text-button" onClick={() => setSelectedJobIds(new Set())} disabled={!selectedJobIds.size}>
+              {!!selectedJobIds.size && <button type="button" className="selection-text-button" onClick={() => setSelectedJobIds(new Set())}>
                 清除选择
-              </button>
+              </button>}
             </div>
             <div className="bulk-actions">
-              {features.cancelAll && (
+              {features.cancelAll && Boolean(stats.active || stats.queued) && (
                 <button
                   type="button"
                   className="stop-all-button"
@@ -885,6 +900,7 @@ function App() {
                   停止全部
                 </button>
               )}
+              {!!selectedJobIds.size && <>
               <button type="button" className="download-button" onClick={downloadSelected} disabled={!canDownloadSelected || Boolean(batchAction)}>
                 {batchAction === "download" ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
                 批量下载
@@ -939,6 +955,7 @@ function App() {
                 {batchAction === "delete" ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}
                 批量删除
               </button>
+              </>}
             </div>
           </div>
         )}
@@ -1401,19 +1418,7 @@ function App() {
         </div>
       )}
       {batchOpen && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
-          if (event.target === event.currentTarget && !batchBusy) setBatchOpen(false);
-        }}>
-          <form className="batch-dialog" onSubmit={createBatch} role="dialog" aria-modal="true" aria-labelledby="batch-title">
-            <div className="dialog-header">
-              <div>
-                <h2 id="batch-title">批量添加任务</h2>
-                <span>{countBatchLines(batchText)} 条，超出并发上限后自动排队</span>
-              </div>
-              <button type="button" className="icon-button" onClick={() => setBatchOpen(false)} disabled={batchBusy} title="关闭">
-                <X size={18} />
-              </button>
-            </div>
+        <Dialog title="批量添加任务" subtitle={`${countBatchLines(batchText)} 条，超出并发上限后自动排队`} busy={batchBusy} onClose={() => setBatchOpen(false)} onSubmit={createBatch} initialFocus="#batch-input">
             <label className="batch-label" htmlFor="batch-input">
               {mailRequestSettings.method === "POST"
                 ? "每行：邮箱----编码请求体，或 邮箱----密码----编码请求体；邮箱及可识别字段顺序不限"
@@ -1422,23 +1427,22 @@ function App() {
             <textarea
               id="batch-input"
               value={batchText}
+              disabled={batchBusy}
               onChange={(event) => setBatchText(event.target.value)}
               placeholder={mailRequestSettings.method === "POST"
                 ? "a@example.com----eyJtYWlsYm94X2lkIjoiaWQtYSJ9\nb@example.com----账号密码----mailbox_id%3Did-b"
                 : "name@icloud.com----https://mail.example/messages/name\nhttps://mail.example/messages/name2|账号密码|name2@example.co.uk|BASE32二步验证密钥\nBASE32二步验证密钥::name3@example.dev::账号密码"}
               spellCheck="false"
-              autoFocus
             />
             {batchError && <div className="dialog-error" role="alert"><CircleAlert size={15} />{batchError}</div>}
             <div className="dialog-footer">
               <button type="button" className="cancel-button" onClick={() => setBatchOpen(false)} disabled={batchBusy}>取消</button>
               <button type="submit" className="primary-button" disabled={!batchText.trim() || batchBusy || countBatchLines(batchText) > 500}>
                 {batchBusy ? <LoaderCircle className="spin" size={17} /> : <ListPlus size={17} />}
-                创建 {countBatchLines(batchText) || ""} 条任务
+                {batchBusy ? "正在创建…" : countBatchLines(batchText) ? `创建 ${countBatchLines(batchText)} 条任务` : "创建任务"}
               </button>
             </div>
-          </form>
-        </div>
+        </Dialog>
       )}
       {filterOpen && (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
@@ -1495,21 +1499,9 @@ function quotaAmount(value) {
   return typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(2)}` : "暂无";
 }
 
-function accountIsOnline(item) {
-  return item?.status === "ready"
-    && item.accountStatus === "active"
-    && item.schedulable === true
-    && !item.deleting
-    && !item.reauthRequired;
-}
-
-function accountNeedsReauth(job, item) {
-  return job.status === "reauth_required" || item?.reauthRequired === true;
-}
-
 function quotaPair(item) {
   const quota = item?.quota;
-  if (!quota || (quota.total === null && quota.used === null)) return "";
+  if (!quota || quota.supported === false || (quota.total == null && quota.used == null)) return "";
   const used = quotaAmount(quota.used);
   return quota.total === 0 ? `已用 ${used} / 不限额` : `已用 ${used} / ${quotaAmount(quota.total)}`;
 }
@@ -1517,25 +1509,14 @@ function quotaPair(item) {
 function AccountHealth({ job, item, loading }) {
   if (loading && !item) return <div className="account-health"><span className="account-health-pending">读取账号状态…</span></div>;
   if (!item) return null;
-  const linked = item.status === "ready";
-  const online = accountIsOnline(item);
-  const reauth = accountNeedsReauth(job, item);
-  const statusText = item.status === "unlinked"
-    ? "未关联"
-    : item.status === "missing"
-      ? "账号已删除"
-      : item.status === "error"
-        ? "读取失败"
-        : item.deleting
-          ? "删除处理中"
-          : online ? "在线" : "离线";
+  const state = accountState(job, item);
+  const message = item.error || item.message || (state.attention ? "请打开账号详情核对状态，需重新授权时可在更多操作中重试。" : "");
   return (
-    <div className="account-health" title={item.error || ""}>
-      <span className={`account-health-pill ${online ? "online" : "offline"}`}>{statusText}</span>
-      <span className={`account-health-pill ${reauth ? "reauth" : linked ? "authorized" : "pending"}`}>
-        {reauth ? "需重新授权" : linked ? "授权正常" : "未关联"}
-      </span>
+    <div className="account-health">
+      <span className={`account-health-pill ${state.kind}`}>{state.label}</span>
+      {item.accountID && <span className="account-number">#{item.accountID}</span>}
       {quotaPair(item) && <span className="account-quota-chip">{quotaPair(item)}</span>}
+      {state.attention && message && <p className="account-issue" role="alert">{item.accountID ? `账号 #${item.accountID}` : shortId(job.id)}：{message}</p>}
     </div>
   );
 }
@@ -1544,12 +1525,10 @@ function AccountSummary({ jobs, details, loading, error, updatedAt, onRefresh })
   const items = jobs.map((job) => ({ job, item: details[job.id] })).filter(({ item }) => item);
   const onlineCount = items.filter(({ item }) => accountIsOnline(item)).length;
   const reauthCount = items.filter(({ job, item }) => accountNeedsReauth(job, item)).length;
-  const quotaItems = items.map(({ item }) => item.quota).filter((quota) => quota && (quota.total !== null || quota.used !== null));
-  const usedValues = quotaItems.map((quota) => quota.used).filter((value) => typeof value === "number" && Number.isFinite(value));
-  const totalValues = quotaItems.map((quota) => quota.total).filter((value) => typeof value === "number" && Number.isFinite(value));
-  const hasOnlyUnlimited = totalValues.length > 0 && totalValues.every((value) => value === 0);
-  const totalQuota = totalValues.length ? (hasOnlyUnlimited ? "不限额" : quotaAmount(totalValues.reduce((sum, value) => sum + value, 0))) : "暂无";
-  const usedQuota = usedValues.length ? quotaAmount(usedValues.reduce((sum, value) => sum + value, 0)) : "暂无";
+  const issueCount = items.filter(({ job, item }) => accountState(job, item).attention).length;
+  const totalQuota = configuredQuota(items.map(({ item }) => item), "total");
+  const usedQuota = configuredQuota(items.map(({ item }) => item), "used");
+  const unknownCount = jobs.length - items.length;
   return (
     <section className="account-summary" aria-label="账号概览">
       <div className="account-summary-header">
@@ -1558,16 +1537,18 @@ function AccountSummary({ jobs, details, loading, error, updatedAt, onRefresh })
           <p>{loading ? "正在同步账号状态和额度…" : updatedAt ? `更新于 ${new Date(updatedAt).toLocaleTimeString()}` : "等待同步账号数据"}</p>
         </div>
         <button type="button" className="secondary-button account-summary-refresh" onClick={onRefresh} disabled={loading}>
-          <RefreshCw size={15} className={loading ? "spin" : ""} />刷新账号数据
+          <RefreshCw size={15} className={loading ? "spin" : ""} />刷新
         </button>
       </div>
       <div className="account-summary-grid">
         <div><span>账号总数</span><strong>{jobs.length}</strong></div>
-        <div><span>当前在线</span><strong className="online-value">{onlineCount}</strong></div>
-        <div><span>待重新授权</span><strong className={reauthCount ? "reauth-value" : ""}>{reauthCount}</strong></div>
-        <div><span>总额度</span><strong>{totalQuota}</strong></div>
-        <div><span>已使用额度</span><strong>{usedQuota}</strong></div>
+        <div><span>当前在线</span><strong className="online-value">{items.length ? onlineCount : "—"}</strong></div>
+        <div><span>待重新授权</span><strong className={reauthCount ? "reauth-value" : ""}>{items.length ? reauthCount : "—"}</strong></div>
+        <div><span>需要处理</span><strong className={issueCount ? "reauth-value" : ""}>{items.length ? issueCount : "—"}</strong></div>
+        <div className="quota-metric"><span>配置总额度</span><strong>{totalQuota.text}</strong>{totalQuota.count > 0 && <small>覆盖 {totalQuota.count}/{jobs.length} 个账号</small>}</div>
+        <div className="quota-metric"><span>配置额度已用</span><strong>{usedQuota.text}</strong>{usedQuota.count > 0 && <small>覆盖 {usedQuota.count}/{jobs.length} 个账号</small>}</div>
       </div>
+      <p className="account-summary-note">OAuth 订阅额度未提供；累计扣费见账号详情。在线指账号可调度。{unknownCount > 0 && ` ${unknownCount} 个状态待读取。`}</p>
       {error && <div className="account-summary-error" role="alert">账号状态读取失败：{error}；可点击刷新重试。</div>}
     </section>
   );
@@ -1579,6 +1560,7 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
   const [submitting, setSubmitting] = useState(false);
   const [mobileCollapsed, setMobileCollapsed] = useState(terminal);
   const [actionsOpen, setActionsOpen] = useState(false);
+  const [copyNotice, setCopyNotice] = useState("");
   const actionsId = `job-actions-${job.id}`;
 
   useEffect(() => setValue(""), [job.status]);
@@ -1586,6 +1568,15 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
     if (!terminal) setMobileCollapsed(false);
   }, [terminal]);
   useEffect(() => setActionsOpen(false), [job.status]);
+
+  async function copyEmail() {
+    try {
+      await navigator.clipboard.writeText(job.email);
+      setCopyNotice("账号已复制");
+    } catch {
+      setCopyNotice(`复制失败，请手动选择账号：${job.email}`);
+    }
+  }
 
   async function sendInput(action, submittedValue = value) {
     setSubmitting(true);
@@ -1744,16 +1735,19 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
         <div className="account-cell">
           <div className="account-avatar">{job.email.slice(0, 1).toUpperCase()}</div>
           <div className="account-details">
-            <strong>{job.email}</strong>
-            <span>{shortId(job.id)}</span>
+            <div className="account-identity"><strong title={job.email}>{job.email}</strong><button type="button" className="copy-account" title="复制完整账号" aria-label={`复制账号 ${job.email}`} onClick={copyEmail}><Copy size={14} /></button></div>
+            <div className="account-meta">
+              <span>{shortId(job.id)}</span>
+              <LoginMethodBadge job={job} />
+            </div>
             {linkedAccountEnabled && <AccountHealth job={job} item={linkedAccount} loading={linkedAccountLoading} />}
+            {copyNotice && <p className="account-copy-notice" role="status">{copyNotice}</p>}
             <div className="mobile-job-status"><StatusBadge status={job.status} /></div>
             <button type="button" className="account-collapse-toggle" onClick={() => setMobileCollapsed((current) => !current)} aria-expanded={!mobileCollapsed}>
               {mobileCollapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
               {mobileCollapsed ? "展开详情" : "收起详情"}
             </button>
           </div>
-          <LoginMethodBadge job={job} />
         </div>
       </td>
       <td data-label="状态"><StatusBadge status={job.status} /></td>
@@ -1888,11 +1882,13 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
           {totpSetupAvailable && job.canSetupTotp && (
             <button type="button" className="icon-button" onClick={setupTotp} disabled={submitting} title="设置 2FA" aria-label="设置 2FA">
               {submitting ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}
+              设置 2FA
             </button>
           )}
           {passwordAddAvailable && job.canAddPassword && (
             <button type="button" className="icon-button" onClick={addPassword} disabled={submitting} title="添加密码" aria-label="添加密码">
               {submitting ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}
+              添加密码
             </button>
           )}
           {job.canRetry && (
@@ -1903,11 +1899,13 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
           )}
           <button type="button" className="icon-button" onClick={onToggleLogs} title={expanded ? "收起日志" : "查看日志"} aria-label={expanded ? "收起日志" : "查看日志"}>
             <FileText size={17} />
+            {expanded ? "收起日志" : "查看日志"}
             {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
           </button>
           {!terminal && (
             <button type="button" className="icon-button danger" onClick={cancel} disabled={submitting} title="取消任务">
               <Ban size={17} />
+              取消任务
             </button>
           )}
         </div>
