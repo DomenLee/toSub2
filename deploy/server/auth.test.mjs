@@ -8,6 +8,7 @@ import { createAuth } from "./auth.mjs";
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), "tosub2-auth-"));
 const passwordFile = path.join(directory, "password");
 const origin = "https://console.example.invalid";
+const lifetime = 3 * 24 * 60 * 60_000;
 let password = "Test1234AbCd";
 await fs.writeFile(passwordFile, password, { mode: 0o600 });
 let time = 100000;
@@ -30,6 +31,8 @@ async function session() {
   const data = await response.json();
   const cookie = response.headers.get("set-cookie");
   assert.match(cookie, /^__Host-tosub2-session=[\w-]{43};/);
+  assert.match(cookie, /; Max-Age=259200$/);
+  assert.equal(data.expiresIn, lifetime);
   for (const flag of ["Secure", "HttpOnly", "SameSite=Strict", "Path=/"]) assert.ok(cookie.includes(flag));
   assert.ok(!cookie.includes("Domain="));
   return { headers: { Cookie: cookie.split(";")[0], Origin: origin, "x-console-token": data.token }, data };
@@ -69,10 +72,20 @@ try {
   assert.equal((await fetch(base + "/api/jobs/delete-batch", { method: "POST", headers: { ...valid, "x-console-token": first.data.token } })).status, 403);
   assert.equal((await fetch(base + "/api/jobs/delete-batch", { method: "POST", headers: { ...valid, Origin: "https://sibling.example.invalid" } })).status, 403);
   assert.equal((await fetch(base + "/api/jobs/delete-batch", { method: "POST", headers: valid })).status, 200);
-  time += 29 * 60000;
-  assert.equal((await fetch(base + "/api/auth/session", { headers: valid })).status, 200);
-  time += 60001;
-  assert.equal((await fetch(base + "/api/auth/session", { headers: valid })).status, 401, "polls cannot renew idle expiry");
+  const created = time;
+  for (const elapsed of [31 * 60_000, 13 * 60 * 60_000, 2 * 24 * 60 * 60_000, lifetime - 1]) {
+    time = created + elapsed;
+    const response = await fetch(base + "/api/auth/session", { headers: valid });
+    assert.equal(response.status, 200, "inactive sessions remain valid for three days");
+    assert.equal((await response.json()).expiresIn, lifetime - elapsed, "polls cannot extend the login deadline");
+    assert.equal(response.headers.get("set-cookie"), null);
+  }
+  time = created + lifetime;
+  const expired = await fetch(base + "/api/auth/session", { headers: valid });
+  assert.equal(expired.status, 401, "sessions expire exactly three days after login");
+  assert.match(expired.headers.get("set-cookie"), /Max-Age=0/);
+  assert.equal((await fetch(base + "/api/jobs/a/download", { headers: valid })).status, 401);
+  assert.equal((await fetch(base + "/api/jobs/delete-batch", { method: "POST", headers: valid })).status, 401);
   const active = await session();
   time += 20 * 60000;
   assert.equal((await fetch(base + "/api/auth/activity", { method: "POST", headers: active.headers })).status, 200);
@@ -83,11 +96,15 @@ try {
   assert.match(loggedOut.headers.get("set-cookie"), /Max-Age=0/);
   assert.equal((await fetch(base + "/api/bootstrap", { headers: active.headers })).status, 401);
   const long = await session();
-  for (let index = 0; index < 35; index++) {
-    time += 20 * 60000;
-    assert.equal((await fetch(base + "/api/auth/activity", { method: "POST", headers: long.headers })).status, 200);
+  const activityInterval = 6 * 60 * 60_000;
+  for (let index = 1; index < 12; index++) {
+    time += activityInterval;
+    const response = await fetch(base + "/api/auth/activity", { method: "POST", headers: long.headers });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).expiresIn, lifetime - index * activityInterval, "user activity cannot extend the login deadline");
+    assert.equal(response.headers.get("set-cookie"), null);
   }
-  time += 20 * 60000;
+  time += activityInterval;
   assert.equal((await fetch(base + "/api/auth/activity", { method: "POST", headers: long.headers })).status, 401, "absolute expiry cannot be renewed");
   const beforeRotation = await session();
   password = "Other123AbCd";
@@ -101,7 +118,7 @@ try {
   await fs.writeFile(passwordFile, "short");
   assert.equal((await fetch(base + "/api/auth/session", { headers: beforeRestart.headers })).status, 503);
   await assert.rejects(createAuth(settings), /12 to 512/);
-  console.log("PASS: 12-character password, cookie sessions, protected APIs/downloads, no Basic bypass, CSRF/origin checks, non-spoofable rate limits, idle/absolute expiry, logout, rotation and restart revocation");
+  console.log("PASS: 12-character password, three-day cookie sessions, protected APIs/downloads, no Basic bypass, CSRF/origin checks, non-spoofable rate limits, fixed 72-hour expiry despite polling/activity, logout, rotation and restart revocation");
 } finally {
   server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));

@@ -147,7 +147,7 @@ export default function Auth({ children }) {
       <p className="console-login-description">管理授权账号，查看同步与在线状态</p>
       {checking ? <div className="console-login-loading" role="status"><LoaderCircle className="spin" size={18} />正在确认登录状态…</div> : <Login onLogin={login} notice={notice} initialError={error} />}
     </section>
-    <p className="console-login-footer">30 分钟无操作后需重新登录</p>
+    <p className="console-login-footer">登录有效期为 3 天；退出、改密或服务重启后需重新登录</p>
   </main>;
 }
 

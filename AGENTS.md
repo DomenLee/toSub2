@@ -12,6 +12,6 @@
 - 工作区身份取 OAuth 令牌中的 `https://api.openai.com/auth.chatgpt_account_id`，禁止使用 `sid` / `authsess_...`。回写复用本项目 `apply-oauth-credentials` 接口清理令牌缓存；401 恢复后重新启用原账号调度，不覆盖分组、代理或额度。
 - 已同步文件摘要不变时仍每分钟核验绑定。旧 `authsess_` 只在编号、邮箱、令牌工作区及持久化同步记录一致时，通过现有 `bulk-update` 接口合并工作区元数据；不得重放旧令牌、清除现有错误或改变调度。失败与重启必须保留成功摘要，缺少可信记录时显示具体原因并停止修改。
 - 密码、OAuth、TOTP、集成密钥不写入日志或仓库。服务器密钥仅在 `/opt/tosub2/secrets`；本机入口密码位于 `/Users/lifengdem1pro/.codex/credentials/tosub2/console.password`，禁止直接打印。
-- 生产控制台使用 `/login` 页面与服务端会话，禁止恢复浏览器 Basic 弹窗。业务页面、API、下载均鉴权；仅登录页、编译静态资源与不含业务信息的 `/healthz` 可匿名访问。写操作校验 Origin 与会话 CSRF token，Cookie 为 Secure/HttpOnly/SameSite=Strict；空闲 30 分钟、最长 12 小时，轮询不得续期。
+- 生产控制台使用 `/login` 页面与服务端会话，禁止恢复浏览器 Basic 弹窗。业务页面、API、下载均鉴权；仅登录页、编译静态资源与不含业务信息的 `/healthz` 可匿名访问。写操作校验 Origin 与会话 CSRF token，Cookie 为 Secure/HttpOnly/SameSite=Strict；登录后固定有效 3 天（72 小时），Cookie 同期到期，轮询和用户操作均不得延长固定期限；退出、改密或服务重启仍撤销会话。
 - 入口密码轮换需明确授权，使用随机 12 位字母数字；不修改数据加密或集成密钥。新密码先保存本机 `console.password.next`，服务器暂存文件须绑定最终 main SHA，由发布守卫启用，失败恢复旧密码；未验收时不能把暂存状态说成已生效。守卫更新需同时单独安装 `deploy-github.sh`、`probe.mjs`、`password-stage.py`。
 - SSH 运维入口：`/Users/lifengdem1pro/.codex/credentials/sub2api-vultr/ssh.sh '<命令>'`。不修改其他应用的容器或现有反向代理站点。

@@ -2,8 +2,8 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 
 const cookieName = "__Host-tosub2-session";
-const idle = 30 * 60_000;
-const lifetime = 12 * 60 * 60_000;
+const lifetime = 3 * 24 * 60 * 60_000;
+const idle = lifetime;
 const hash = value => crypto.createHash("sha256").update(value).digest();
 const equal = (left, right) => crypto.timingSafeEqual(hash(String(left)), hash(String(right)));
 const asset = pathname => pathname === "/favicon.svg" || /^\/assets\/[a-zA-Z0-9_.-]+\.(js|css|svg|png|woff2?)$/.test(pathname);

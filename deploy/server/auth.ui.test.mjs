@@ -18,7 +18,7 @@ export async function testAuthUI(directory) {
   let logins = 0;
   const calls = [];
   const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
-  const session = { username: "admin", token: "FAKE_SESSION_TOKEN", expiresIn: 1800000 };
+  const session = { username: "admin", token: "FAKE_SESSION_TOKEN", expiresIn: 3 * 24 * 60 * 60_000 };
   dom.window.fetch = async (endpoint, options = {}) => {
     calls.push({ endpoint, options });
     if (endpoint === "/api/auth/session") return json(authenticated ? session : { error: "登录已失效" }, authenticated ? 200 : 401);
@@ -60,6 +60,7 @@ export async function testAuthUI(directory) {
     dom.window.eval(await fs.readFile(path.join(assets, bundle), "utf8"));
     await until(() => button("登录控制台"));
     assert.equal(dom.window.location.pathname, "/login");
+    assert.equal(document.querySelector(".console-login-footer").textContent, "登录有效期为 3 天；退出、改密或服务重启后需重新登录");
     assert.equal(calls.some(call => call.endpoint === "/api/bootstrap"), false, "protected app must not mount before authentication");
     assert.equal(document.getElementById("console-password").autocomplete, "current-password");
     fill("console-username", "");
