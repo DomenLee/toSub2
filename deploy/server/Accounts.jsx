@@ -11,6 +11,11 @@ async function request(token, endpoint, body, signal) {
   return result;
 }
 
+export function WeeklyLimitTag({ item }) {
+  if (item?.usage?.weeklyLimit !== true) return null;
+  return <span className="weekly-limit-tag" title="仅有 7 天周额度，没有 5 小时额度">周限额</span>;
+}
+
 function Summary({ item, children }) {
   const online = accountIsOnline(item);
   const state = accountState({}, item);
@@ -18,7 +23,7 @@ function Summary({ item, children }) {
   const quota = item.quota || {};
   const quotaAmount = value => typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(2)}` : "未提供";
   return <div style={{ marginTop: 10, padding: 12, border: "1px solid #d4dcda", borderRadius: 6, overflowWrap: "anywhere" }}>
-    <strong>{item.email} · {item.accountID ? `账号 #${item.accountID}` : state.label}</strong>
+    <div className="linked-account-title"><strong>{item.email} · {item.accountID ? `账号 #${item.accountID}` : state.label}</strong><WeeklyLimitTag item={item} /></div>
     {item.status === "ready" && <>
       <div className="linked-account-detail-grid">
         <div><span>当前状态（可调度）</span><strong className={online ? "online" : "offline"}>{state.label}</strong></div>

@@ -5,6 +5,11 @@ const failure = (status, message) => Object.assign(new Error(message), { status 
 const timestamp = value => typeof value === "string" && value.trim() ? Date.parse(value) : NaN;
 const numeric = value => (typeof value === "number" || typeof value === "string" && value.trim() !== "") && Number.isFinite(Number(value)) ? Number(value) : null;
 
+export function weeklyLimitOf(account) {
+  const extra = account.extra || {};
+  return numeric(extra.codex_7d_window_minutes) === 7 * 24 * 60 && numeric(extra.codex_5h_window_minutes) === 0;
+}
+
 export function usageOf(account, now = Date.now()) {
   const extra = account.extra || {};
   const updated = timestamp(extra.codex_usage_updated_at);
@@ -19,7 +24,7 @@ export function usageOf(account, now = Date.now()) {
   };
   const blocked = [account.rate_limit_reset_at, account.overload_until, account.temp_unschedulable_until].some(value => timestamp(value) > now)
     || account.auto_pause_on_expired === true && Number.isFinite(account.expires_at) && account.expires_at * 1000 <= now;
-  return { updatedAt: Number.isFinite(updated) ? new Date(updated).toISOString() : null, blocked, fiveHour: window("5h"), sevenDay: window("7d") };
+  return { updatedAt: Number.isFinite(updated) ? new Date(updated).toISOString() : null, blocked, weeklyLimit: weeklyLimitOf(account), fiveHour: window("5h"), sevenDay: window("7d") };
 }
 
 export function createUsage({ request, inspect, now = Date.now, stateFile = "/data/usage-refresh.json" }) {

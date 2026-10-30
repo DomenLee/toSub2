@@ -97,7 +97,7 @@ await replace("src/console-server.mjs", `    const emails = [...new Set(selected
 await replace("src/console-server.mjs", "    jobs.delete(job.id);", "");
 await replace("src/console-server.mjs", "    deleteStoredLoginCredentials(email),\n  ]);\n  scheduleQueuedJobs();", "    deleteStoredLoginCredentials(email),\n  ]);\n  matching.forEach((job) => jobs.delete(job.id));\n  scheduleQueuedJobs();");
 await replace("src/console-server.mjs", "        sub2apiMonitor: false,", "        sub2apiMonitor: false,\n        linkedAccounts: true,");
-await replace("web/src/main.jsx", 'import SyncPanel from "./SyncPanel.jsx";', 'import SyncPanel from "./SyncPanel.jsx";\nimport { LinkedAccount, DeleteDialog } from "./Accounts.jsx";');
+await replace("web/src/main.jsx", 'import SyncPanel from "./SyncPanel.jsx";', 'import SyncPanel from "./SyncPanel.jsx";\nimport { LinkedAccount, DeleteDialog, WeeklyLimitTag } from "./Accounts.jsx";');
 await replace("web/src/main.jsx", '  const [batchAction, setBatchAction] = useState("");', '  const [batchAction, setBatchAction] = useState("");\n  const [deleteJobs, setDeleteJobs] = useState(null);');
 await replace("web/src/main.jsx", `    if (!window.confirm(\`确定删除选中的 \${selectedJobIds.size} 条任务吗？对应的本地授权文件也会被删除。\`)) return;
     setBatchAction("delete");
@@ -124,7 +124,7 @@ await replace("web/src/main.jsx", "    </main>\n  );\n}\n\nfunction EmptyState",
 }
 
 function EmptyState`);
-await replace("web/src/main.jsx", "              <LoginMethodBadge job={job} />", "              <LoginMethodBadge job={job} />\n              <LinkedAccount token={token} job={job} />");
+await replace("web/src/main.jsx", "              <LoginMethodBadge job={job} />", "              <LoginMethodBadge job={job} />\n              <WeeklyLimitTag item={linkedAccount} />\n              <LinkedAccount token={token} job={job} />");
 
 await replace("src/console-server.mjs", '  if (req.method === "POST" && requestUrl.pathname === "/api/linked-accounts") {', `  if (req.method === "POST" && ["/api/account-usage/refresh", "/api/group-usage/trend"].includes(requestUrl.pathname)) {
     const body = await readJson(req);
