@@ -41,7 +41,7 @@ export async function testUI(directory) {
     }
     else if (endpoint === "/api/linked-accounts") {
       linkedRequests.push({ body, signal: options.signal });
-      result = { items: body.ids.map(id => ({ id, email: jobs.find(job => job.id === id)?.email, accountID: id.endsWith("1") ? 42 : 43, status: accountMode, code: accountMode === "error" ? accountCode : undefined, error: accountMode === "error" ? accountCode === "legacy_workspace" ? "旧版会话标识 authsess_，请在自动同步面板查看结果或立即重试。" : "工作区不一致，请核对绑定后刷新。" : "", accountStatus: "active", schedulable: true, reauthRequired: false, quota: { total: 100, used: 12.5 }, groups: [{ id: 7, name: "Test Pool" }], userCost: statsFail ? null : 12.345678, statsError: statsFail ? "累计扣费读取失败，请点击刷新重试" : "" })) };
+      result = { items: body.ids.map(id => ({ id, email: jobs.find(job => job.id === id)?.email, accountID: id.endsWith("1") ? 42 : 43, status: accountMode, code: accountMode === "error" ? accountCode : undefined, error: accountMode === "error" ? accountCode === "legacy_workspace" ? "旧版会话标识 authsess_，请在自动同步面板查看结果或立即重试。" : "工作区不一致，请核对绑定后刷新。" : "", accountStatus: "active", schedulable: true, reauthRequired: false, quota: { total: 100, used: 12.5 }, groups: [{ id: 7, name: "Test Pool" }], usage: { weeklyLimit: id.endsWith("1") }, userCost: statsFail ? null : 12.345678, statsError: statsFail ? "累计扣费读取失败，请点击刷新重试" : "" })) };
     }
     else if (endpoint === "/api/jobs/delete-batch") {
       deletedRequests.push(body);
@@ -124,6 +124,8 @@ export async function testUI(directory) {
     firstJobRow.querySelector("button.account-collapse-toggle").click();
     await until(() => firstJobRow.classList.contains("mobile-collapsed"));
     await until(() => button("账号详情"));
+    assert.equal(document.querySelectorAll(".weekly-limit-tag").length, 1, "weekly-only account shows one row label");
+    assert.equal(document.querySelector(".weekly-limit-tag").textContent, "周限额");
     assert.match(document.querySelector('[aria-label="账号概览"]').textContent, /当前在线2/);
     assert.match(document.querySelector('[aria-label="账号概览"]').textContent, /额度可用账号待采集/);
     assert.match(document.querySelector('[aria-label="账号概览"]').textContent, /已核实 0\/2/);

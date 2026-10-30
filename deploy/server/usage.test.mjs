@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createUsage, usageOf } from "./usage.mjs";
+import { createUsage, usageOf, weeklyLimitOf } from "./usage.mjs";
 import { usageGroups, usageSummary } from "../../web/src/usage-state.js";
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "tosub2-usage-"));
@@ -15,6 +15,11 @@ try {
   assert.equal(fresh.fiveHour.remaining, 80);
   assert.equal(fresh.sevenDay.state, "fresh");
   assert.equal(JSON.stringify(fresh).includes("SECRET"), false);
+  const weeklyOnly = { extra: { ...extra, codex_5h_window_minutes: 0, codex_7d_window_minutes: 10080 }, credentials: { plan_type: "plus" } };
+  assert.equal(weeklyLimitOf(weeklyOnly), true);
+  assert.equal(usageOf({ ...weeklyOnly, credentials: { plan_type: "free" } }, now).weeklyLimit, true, "expired plans keep the weekly-limit label");
+  assert.equal(weeklyLimitOf({ extra: { ...weeklyOnly.extra, codex_5h_window_minutes: 300 } }), false);
+  assert.equal(weeklyLimitOf({ extra: { ...weeklyOnly.extra, codex_5h_window_minutes: undefined } }), false, "missing snapshots must not be classified as weekly-only");
   assert.equal(usageOf({ extra: { ...extra, codex_5h_used_percent: null } }, now).fiveHour.state, "missing");
   assert.equal(usageOf({ extra: { ...extra, codex_5h_used_percent: "" } }, now).fiveHour.state, "missing");
   assert.equal(usageOf({ extra: { ...extra, codex_5h_used_percent: "0" } }, now).fiveHour.remaining, 100);

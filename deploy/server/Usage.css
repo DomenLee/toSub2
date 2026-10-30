@@ -1,3 +1,7 @@
+.weekly-limit-tag { flex: 0 0 auto; display: inline-flex; align-items: center; min-height: 20px; padding: 2px 7px; border: 1px solid #d4a72c; border-radius: 999px; color: #7a5200; background: #fff4cc; font-size: 11px; font-weight: 700; line-height: 1; white-space: nowrap; }
+.linked-account-title { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.linked-account-title strong { min-width: 0; overflow-wrap: anywhere; }
+
 .usage-panel { margin: 0 0 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
 .usage-panel-toggle { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 16px; border: 0; border-radius: 10px; background: transparent; color: var(--ink); cursor: pointer; text-align: left; }
 .usage-panel-toggle strong { display: block; font-size: 14px; }
