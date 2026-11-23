@@ -163,6 +163,17 @@ export function createEmailPool({ filePath }) {
     summary() {
       return run(async () => summaryOf((await load()).items));
     },
+    mailboxFor(email) {
+      return run(async () => {
+        const item = findItem(await load(), email);
+        if (!item || !validateMailApiUrl(item.mailApiUrl)) return null;
+        return {
+          mailApiUrl: item.mailApiUrl,
+          mailRequestBody: item.mailRequestBody || "",
+          provider: item.provider === "assurivo" ? "assurivo" : "url",
+        };
+      });
+    },
     importText(text, provider = "url") {
       return run(async () => {
         const parsed = parseEmailPoolText(text, provider);

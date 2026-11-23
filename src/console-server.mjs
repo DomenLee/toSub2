@@ -819,7 +819,7 @@ function scheduleQueuedJobs() {
 
 async function prepareAndLaunchJob(job, mode, queueRunId) {
   try {
-    if (["full", "totp_setup", "password_add", "change_email"].includes(mode) && job.mailApiUrl) await loadMailboxBaseline(job);
+    if (["full", "totp_setup", "password_add", "change_email"].includes(mode) && otpMailboxForJob(job).url) await loadMailboxBaseline(job);
     if (!isActive(job.status) || job.status === "queued" || job.queueRunId !== queueRunId) return;
     launchJob(job, { mode });
   } catch (error) {
@@ -1367,6 +1367,8 @@ function blankEmailChangeState() {
     emailRenamedFrom: null,
     emailChangeResumesAuthorization: false,
     emailChangeFromPool: false,
+    emailChangeSourceMailApiUrl: null,
+    emailChangeSourceMailRequestBody: "",
   };
 }
 
@@ -1384,6 +1386,8 @@ function restoredEmailChangeState(metadata = {}) {
     emailRenamedFrom: isEmail(metadata.email_renamed_from) ? metadata.email_renamed_from : null,
     emailChangeResumesAuthorization: false,
     emailChangeFromPool: Boolean(metadata.email_change_from_pool),
+    emailChangeSourceMailApiUrl: validateMailApiUrl(metadata.email_change_source_mail_api_url) ? metadata.email_change_source_mail_api_url : null,
+    emailChangeSourceMailRequestBody: typeof metadata.email_change_source_mail_request_body === "string" ? metadata.email_change_source_mail_request_body : "",
   };
 }
 
@@ -1447,6 +1451,9 @@ async function startEmailChange(job, body = {}) {
   job.emailChangeError = null;
   job.emailChangeRemotePending = false;
   job.emailChangeFromPool = Boolean(claimed);
+  const sourceMailbox = job.mailApiUrl ? null : await emailPool.mailboxFor(job.email);
+  job.emailChangeSourceMailApiUrl = sourceMailbox?.mailApiUrl || null;
+  job.emailChangeSourceMailRequestBody = sourceMailbox?.mailRequestBody || "";
   job.emailChangeResumesAuthorization = resumeAuthorization;
   job.proxyRiskRetryCount = 0;
   job.proxyConnectionFailureCount = 0;
@@ -1609,6 +1616,8 @@ function clearEmailChangeAttempt(job, options = {}) {
   job.runId = null;
   job.emailChangeResumesAuthorization = false;
   job.emailChangeFromPool = false;
+  job.emailChangeSourceMailApiUrl = null;
+  job.emailChangeSourceMailRequestBody = "";
   if (!options.keepPending) {
     job.pendingNewEmail = null;
     job.pendingNewMailApiUrl = null;
@@ -1938,16 +1947,19 @@ function consumeOutput(job, rawText) {
   if (scan.includes("Email OTP (r=resend, q=quit):")) {
     markAuthorizationRequirement(job, "emailOtp");
     const rejected = scan.includes("[email-otp-rejected]");
+    const autoMailbox = Boolean(otpMailboxForJob(job).url);
     setStage(
       job,
       "email_otp",
       rejected
         ? "邮箱验证码错误，请重新输入或重新发送"
-        : job.mailApiUrl
-          ? "正在等待收码接口返回新验证码，也可以手动输入"
+        : autoMailbox
+          ? (job.runMode === "change_email"
+            ? "正在自动读取源邮箱的登录验证码"
+            : "正在等待收码接口返回新验证码，也可以手动输入")
           : "请输入邮箱验证码",
     );
-    if (job.mailApiUrl) void beginMailPolling(job);
+    if (autoMailbox) void beginMailPolling(job);
   }
   if (scan.includes("Password (q=quit):")) {
     markAuthorizationRequirement(job, "password");
@@ -4796,6 +4808,8 @@ async function saveJobMetadata(job) {
         email_change_error: job.emailChangeError || null,
         email_change_remote_pending: Boolean(job.emailChangeRemotePending),
         email_change_from_pool: Boolean(job.emailChangeFromPool),
+        email_change_source_mail_api_url: job.emailChangeSourceMailApiUrl || null,
+        email_change_source_mail_request_body: job.emailChangeSourceMailRequestBody || null,
         email_renamed_from: job.emailRenamedFrom || null,
         login_checkpoint_available: Boolean(job.loginCheckpointAvailable),
         proxy_risk_retry_count: Number(job.proxyRiskRetryCount || 0),
@@ -4863,9 +4877,10 @@ async function deleteStoredLoginCredentials(email) {
 }
 
 async function loadMailboxBaseline(job) {
+  const mailbox = otpMailboxForJob(job);
   try {
-    const candidates = await fetchMailboxOtpCandidates(mailApiUrlForJob(job), {
-      request: mailRequestForJob(job),
+    const candidates = await fetchMailboxOtpCandidates(mailbox.url, {
+      request: mailbox.request,
     });
     candidates.forEach((candidate) => job.mailSeenCandidateKeys.add(candidate.key));
     job.mailStatus = "ready";
@@ -4880,7 +4895,8 @@ async function loadMailboxBaseline(job) {
 }
 
 async function beginMailPolling(job) {
-  if (!mailApiUrlForJob(job) || job.mailPollRunning || job.status !== "email_otp") return;
+  const mailbox = otpMailboxForJob(job);
+  if (!mailbox.url || job.mailPollRunning || job.status !== "email_otp") return;
   job.mailPollRunning = true;
   job.mailStatus = "polling";
   job.mailApiError = null;
@@ -4898,8 +4914,8 @@ async function beginMailPolling(job) {
     ) {
       try {
         const candidates = filterMailboxOtpCandidatesByRequestTime(
-          await fetchMailboxOtpCandidates(mailApiUrlForJob(job), {
-            request: mailRequestForJob(job),
+          await fetchMailboxOtpCandidates(mailbox.url, {
+            request: mailbox.request,
           }),
           job.mailOtpRequestedAt,
         );
@@ -4950,7 +4966,6 @@ async function beginMailPolling(job) {
 }
 
 function stopMailPolling(job) {
-  if (!job.mailApiUrl) return;
   job.mailPollToken = null;
   job.mailPollRunning = false;
   if (job.mailStatus === "polling") job.mailStatus = "stopped";
@@ -5011,6 +5026,27 @@ function mailApiUrlForJob(job) {
   return mailRequestConfig.method === "POST" && validateMailApiUrl(mailRequestConfig.url)
     ? mailRequestConfig.url
     : job.mailApiUrl;
+}
+
+function otpMailboxForJob(job) {
+  if (
+    (job.runMode === "change_email" || job.queuedMode === "change_email")
+    && !job.mailApiUrl
+    && validateMailApiUrl(job.emailChangeSourceMailApiUrl)
+  ) {
+    return {
+      url: job.emailChangeSourceMailApiUrl,
+      request: {
+        method: job.emailChangeSourceMailRequestBody ? "POST" : "GET",
+        headers: {},
+        body: job.emailChangeSourceMailRequestBody || "",
+      },
+    };
+  }
+  return {
+    url: mailApiUrlForJob(job),
+    request: mailRequestForJob(job),
+  };
 }
 
 function delay(ms) {

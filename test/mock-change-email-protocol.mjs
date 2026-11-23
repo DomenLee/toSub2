@@ -12,6 +12,18 @@ if (args.includes("--change-email")) {
   const nextEmail = String(process.env.CHATGPT_NEW_EMAIL || "");
   const mailUrl = String(process.env.CHATGPT_NEW_MAIL_API_URL || "");
   if (!nextEmail || !mailUrl) process.exit(2);
+  if (process.env.TOSUB2_MOCK_LOGIN_OTP === "1") {
+    console.log("Email OTP (r=resend, q=quit):");
+    const code = await new Promise((resolve) => {
+      let buffer = "";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", (chunk) => {
+        buffer += chunk;
+        if (buffer.includes("\n")) resolve(buffer.trim());
+      });
+    });
+    if (!/^\d{6}$/.test(code)) process.exit(3);
+  }
   if (nextEmail.startsWith("fail@")) {
     console.log("[email-change-failed] status=email_already_linked");
     process.exit(1);
