@@ -15,6 +15,9 @@ let workspaceSelectionCount = 0;
 let selectedEmail = "mfa-test@example.com";
 let totpEnabled = false;
 let passwordVerifySentinelCount = 0;
+let signinConnection = "";
+let signinScreenHint = "";
+let oauthTokenRequests = 0;
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || "/", base);
@@ -31,7 +34,8 @@ const server = http.createServer(async (req, res) => {
       "__Host-next-auth.csrf-token=mock-csrf; Path=/",
       "__Secure-next-auth.session-token=mock-session; Path=/",
     ]);
-    return sendText(res, 200, "ok");
+    const accessToken = webAccessToken();
+    return sendText(res, 200, `<html><script>{"accessToken":"${accessToken}"}</script>ok</html>`, "text/html");
   }
   if (req.method === "GET" && url.pathname === "/api/auth/providers") return sendJson(res, 200, {});
   if (req.method === "GET" && url.pathname === "/api/auth/csrf") return sendJson(res, 200, { csrfToken: "mock-csrf" });
@@ -41,11 +45,16 @@ const server = http.createServer(async (req, res) => {
       chatgptWorkspaceSelected,
       workspaceSelectionCount,
       passwordVerifySentinelCount,
+      signinConnection,
+      signinScreenHint,
+      oauthTokenRequests,
     });
   }
   if (req.method === "POST" && url.pathname === "/api/auth/signin/openai") {
     chatgptWorkspaceSelected = false;
     chatgptLoginComplete = false;
+    signinConnection = url.searchParams.get("connection") || "";
+    signinScreenHint = url.searchParams.get("screen_hint") || "";
     selectedEmail = url.searchParams.get("login_hint") || selectedEmail;
     const passwordMode = selectedEmail !== "email-mfa@example.com";
     return sendJson(res, 200, { url: `${base}/api/accounts/authorize?mode=${passwordMode ? "password" : "email"}` });
@@ -185,7 +194,20 @@ const server = http.createServer(async (req, res) => {
     workspaceSelectionCount += 1;
     return sendJson(res, 200, { continue_url: "http://localhost:1455/auth/callback?code=mock-code&state=mock-state" });
   }
+  if (req.method === "GET" && url.pathname === "/backend-api/accounts/change_email/eligibility") {
+    return sendJson(res, 200, { eligible: true });
+  }
+  if (req.method === "POST" && url.pathname === "/backend-api/accounts/change_email/begin") {
+    return sendJson(res, 200, { success: true });
+  }
+  if (req.method === "POST" && url.pathname === "/backend-api/accounts/change_email/verify") {
+    return sendJson(res, 200, { success: true });
+  }
+  if (req.method === "GET" && url.pathname === "/mail-code") {
+    return sendJson(res, 200, { code: "654321", id: "fresh", received_at: new Date().toISOString() });
+  }
   if (req.method === "POST" && url.pathname === "/oauth/token") {
+    oauthTokenRequests += 1;
     const idTokenPayload = Buffer.from(JSON.stringify({
       email: selectedEmail,
       sid: "mock-account-id",
@@ -201,6 +223,13 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(port, "127.0.0.1", () => console.log(`[ok] Mock password/MFA server: ${base}`));
+
+function webAccessToken() {
+  const payload = Buffer.from(JSON.stringify({
+    "https://api.openai.com/auth": { chatgpt_account_id: "acct_workspace" },
+  })).toString("base64url");
+  return `header.${payload}.signature`;
+}
 
 function mfaPayload() {
   return {

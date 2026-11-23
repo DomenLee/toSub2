@@ -806,7 +806,7 @@ function scheduleQueuedJobs() {
         : mode === "password_add"
           ? "正在重新验证账号并准备添加密码"
           : mode === "change_email"
-            ? "正在重新验证账号并准备换绑邮箱"
+            ? "正在使用已保存的密码和 2FA 登录网页"
             : "正在建立登录会话");
     job.queuedAt = null;
     touch(job);
@@ -896,7 +896,6 @@ function launchJob(job, options = {}) {
           "--change-email",
           "--email-change-result",
           job.emailChangeResultPath,
-          ...(job.emailChangeResumesAuthorization ? ["--resume-checkpoint", job.checkpointPath] : []),
           "--verbose",
         ]
     : [
@@ -1463,11 +1462,13 @@ async function startEmailChange(job, body = {}) {
   job.proxyAttemptParserTail = "";
   job.lastError = null;
   job.parserTail = "";
+  await reloadMissingJobCredentials(job);
+  if (!job.password) throw httpError(409, "换绑使用已保存的密码和 2FA 登录网页，当前账号没有可用密码");
   recordJobOperation(job, "change_email");
   appendJobLog(job, claimed
     ? "\n[email-change] 已从邮箱池分配新邮箱，开始换绑。邮箱地址、取码地址和验证码不会写入协议日志。\n"
     : "\n[email-change] 开始换绑邮箱。新邮箱地址、取码地址和验证码不会写入协议日志。\n");
-  enqueueJob(job, "change_email", "正在重新验证账号并准备换绑邮箱");
+  enqueueJob(job, "change_email", "正在使用已保存的密码和 2FA 登录网页");
   } catch (error) {
     if (claimed) await emailPool.release(claimed.email, job.id);
     throw error;

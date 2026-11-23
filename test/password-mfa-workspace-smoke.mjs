@@ -164,6 +164,35 @@ try {
   assert.equal(setupResult.secret, "NB2W45DFOIZAQWER");
   assert.equal(setupResult.activation_mode, "automatic");
   assert.equal(setupResult.activation_succeeded, true);
+
+  const emailChangeResultPath = path.join(tempRoot, "email-change-result.json");
+  const tokenRequestsBeforeChange = (await fetch(`${baseUrl}/__test/state`).then((response) => response.json())).oauthTokenRequests;
+  const emailChange = await runNode([
+    path.join(projectRoot, "src", "protocol-login.mjs"),
+    "--email", "mfa-test@example.com",
+    "--change-email",
+    "--email-change-result", emailChangeResultPath,
+    "--chatgpt-base", baseUrl,
+    "--auth-base", baseUrl,
+    "--verbose",
+  ], {
+    CHATGPT_LOGIN_PASSWORD: "local-test-password",
+    CHATGPT_TOTP_SECRET: "JBSWY3DPEHPK3PXP",
+    CHATGPT_NEW_EMAIL: "next-box@example.com",
+    CHATGPT_NEW_MAIL_API_URL: `${baseUrl}/mail-code`,
+  });
+  assert.equal(emailChange.code, 0, processFailure(emailChange));
+  assert.match(emailChange.output, /Web password login/);
+  assert.match(emailChange.output, /Password accepted/);
+  assert.match(emailChange.output, /\[email-change-changed\]/);
+  assert.doesNotMatch(emailChange.output, /Email OTP/);
+  assert.doesNotMatch(emailChange.output, /Start Codex OAuth/);
+  const webLoginState = await fetch(`${baseUrl}/__test/state`).then((response) => response.json());
+  assert.equal(webLoginState.signinConnection, "password");
+  assert.equal(webLoginState.signinScreenHint, "login");
+  assert.equal(webLoginState.oauthTokenRequests, tokenRequestsBeforeChange);
+  const emailChangeResult = JSON.parse(await fs.readFile(emailChangeResultPath, "utf8"));
+  assert.equal(emailChangeResult.new_email, "next-box@example.com");
   console.log("password/email OTP + 2FA workspace smoke tests passed");
 } catch (error) {
   error.message = `${error.message}\nMock server output:\n${serverLogs}`;

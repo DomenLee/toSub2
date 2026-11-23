@@ -2130,7 +2130,7 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
             <input id="change-mail-url" className="change-email-input" value={changeEmail.mailApiUrl} autoComplete="off" spellCheck="false" disabled={submitting || useEmailPool} onChange={(event) => setChangeEmail((current) => ({ ...current, mailApiUrl: event.target.value }))} placeholder="https://mail.example/api/latest?email=new@example.com" />
             <label className="batch-label" htmlFor="change-mail-body">取码 POST 内容（GET 取码可留空）</label>
             <textarea id="change-mail-body" className="change-mail-body" rows="3" value={changeEmail.mailRequestBody} spellCheck="false" disabled={submitting || useEmailPool} onChange={(event) => setChangeEmail((current) => ({ ...current, mailRequestBody: event.target.value }))} />
-            <p className="dialog-hint">{useEmailPool ? "将按邮箱池顺序分配下一个可用邮箱，并登录当前账号完成换绑。" : "将登录当前账号，向新邮箱发送验证码并完成 ChatGPT 换绑。"}成功后本地邮箱和取码地址改为新邮箱。已绑定的 Sub2API 母账号只更新邮箱，不改分组、代理、额度和调度。密码、验证码和取码地址不会写入日志。</p>
+            <p className="dialog-hint">{useEmailPool ? "将按邮箱池顺序分配下一个可用邮箱。" : "将向填写的新邮箱发送换绑验证码。"}登录使用已保存的密码和 2FA 进入网页，不走 Codex 授权，也不读取登录邮箱验证码。成功后本地邮箱和取码地址改为新邮箱。已绑定的母账号只更新邮箱。</p>
             {changeEmailError && <div className="dialog-error" role="alert"><CircleAlert size={15} />{changeEmailError}</div>}
             <div className="dialog-actions">
               <button type="button" className="cancel-button" disabled={submitting} onClick={() => setChangeEmailOpen(false)}>取消</button>

@@ -511,53 +511,29 @@ async function run() {
     if (args.changeEmail) {
       const resultPath = path.resolve(args.emailChangeResult || DEFAULT_EMAIL_CHANGE_RESULT);
       const replacement = readChangeEmailTarget();
+      const password = process.env.CHATGPT_LOGIN_PASSWORD || "";
+      if (!password) throw new Error("WEB_PASSWORD_LOGIN_UNAVAILABLE: 换绑使用已保存的密码登录网页，当前账号没有可用密码");
       const rl = readline.createInterface({ input, output });
       try {
-        let client = null;
-        let web = null;
-        let email = args.email || "";
-        const checkpointPath = args.resumeCheckpoint ? path.resolve(args.resumeCheckpoint) : null;
+        const email = args.email || "";
+        if (!email) throw new Error("Email is required");
+        if (email.toLowerCase() === replacement.email.toLowerCase()) {
+          console.log("[email-change-failed] status=same_email");
+          throw new Error(`EMAIL_CHANGE_same_email: ${emailChangeStatusText("same_email")}`);
+        }
         let reauthAttempt = 0;
         while (reauthAttempt < 2) {
-          if (checkpointPath && !client && reauthAttempt === 0) {
-            try {
-              const checkpoint = await readProtocolCheckpoint(checkpointPath);
-              if (email && checkpoint.email.toLowerCase() !== email.toLowerCase()) {
-                throw new Error("CHECKPOINT_INVALID: checkpoint email does not match the requested account");
-              }
-              email = checkpoint.email;
-              client = new ProtocolClient({
-                verbose: args.verbose,
-                jar: CookieJar.fromJSON(checkpoint.cookies),
-                transport,
-              });
-              web = checkpoint.web || null;
-              console.log(`[email-change] Reusing verified login checkpoint from ${checkpoint.stage}.`);
-            } catch (error) {
-              if (error?.code !== "ENOENT") {
-                console.log(`[email-change] Saved login checkpoint cannot be reused: ${error.message}`);
-              }
-              client = null;
-            }
-          }
-          email = email || (await ask(rl, "Email: "));
-          if (!email) throw new Error("Email is required");
-          if (email.toLowerCase() === replacement.email.toLowerCase()) {
-            console.log("[email-change-failed] status=same_email");
-            throw new Error(`EMAIL_CHANGE_same_email: ${emailChangeStatusText("same_email")}`);
-          }
-          if (!client) {
-            client = new ProtocolClient({ verbose: args.verbose, transport });
-            console.log("[1/3] Sign in before changing the account email");
-            web = await loginChatgptWeb(client, {
-              chatgptBase,
-              authBase,
-              email,
-              rl,
-              password: process.env.CHATGPT_LOGIN_PASSWORD || "",
-              totpSecret: process.env.CHATGPT_TOTP_SECRET || "",
-            });
-          }
+          const client = new ProtocolClient({ verbose: args.verbose, transport });
+          console.log("[1/3] Web password login before changing the account email");
+          const web = await loginChatgptWeb(client, {
+            chatgptBase,
+            authBase,
+            email,
+            rl,
+            password,
+            totpSecret: process.env.CHATGPT_TOTP_SECRET || "",
+            passwordFirst: true,
+          });
           try {
             await changeChatgptEmail(client, {
               chatgptBase,
@@ -575,21 +551,8 @@ async function run() {
             if (!retryable) throw error;
             if (reauthAttempt >= 1) throw error;
             reauthAttempt += 1;
-            console.log("[email-change] Web session expired; signing in once more before retrying the email change.");
-            client = null;
-            web = null;
+            console.log("[email-change] Web session expired; signing in once more with the saved password before retrying.");
           }
-        }
-        if (checkpointPath && client) {
-          const saveCheckpoint = createCheckpointWriter(checkpointPath, {
-            client,
-            email,
-            chatgptBase,
-            authBase,
-            web,
-          });
-          await saveCheckpoint("email_verified", {});
-          console.log("[checkpoint] Updated verified login state after changing the email.");
         }
       } finally {
         rl.close();
@@ -1186,7 +1149,7 @@ async function askSetupTotpOtp(rl) {
   }
 }
 
-async function loginChatgptWeb(client, { chatgptBase, authBase, email, rl, password, totpSecret }) {
+async function loginChatgptWeb(client, { chatgptBase, authBase, email, rl, password, totpSecret, passwordFirst = false }) {
   await client.follow(`${chatgptBase}/`, { referer: `${chatgptBase}/` });
   await client.getJson("GET", `${chatgptBase}/api/auth/providers`, {
     referer: `${chatgptBase}/`,
@@ -1202,15 +1165,16 @@ async function loginChatgptWeb(client, { chatgptBase, authBase, email, rl, passw
 
   const deviceId = client.jar.value("oai-did", `${chatgptBase}/`) || crypto.randomUUID();
   const authSessionLoggingId = crypto.randomUUID();
-  const signinUrl =
-    `${chatgptBase}/api/auth/signin/openai?` +
-    new URLSearchParams({
-      prompt: "login",
-      "ext-oai-did": deviceId,
-      auth_session_logging_id: authSessionLoggingId,
-      screen_hint: "login_or_signup",
-      login_hint: email,
-    }).toString();
+  const usePassword = Boolean(passwordFirst && password);
+  const signinParams = new URLSearchParams({
+    prompt: "login",
+    "ext-oai-did": deviceId,
+    auth_session_logging_id: authSessionLoggingId,
+    screen_hint: usePassword ? "login" : "login_or_signup",
+    login_hint: email,
+  });
+  if (usePassword) signinParams.set("connection", "password");
+  const signinUrl = `${chatgptBase}/api/auth/signin/openai?${signinParams.toString()}`;
 
   const { data: signin } = await client.getJson("POST", signinUrl, {
     origin: chatgptBase,
@@ -1241,6 +1205,28 @@ async function loginChatgptWeb(client, { chatgptBase, authBase, email, rl, passw
       deviceId,
       password,
       referer: authPage.finalUrl,
+    });
+  } else if (isEmailVerificationPage(authPage.finalUrl) && usePassword) {
+    console.log("[web] Email-code page appeared during password login; requesting the password page.");
+    const switched = await requestPasswordLogin(client, {
+      authBase,
+      email,
+      deviceId,
+      referer: authPage.finalUrl,
+    });
+    const nextUrl = getContinueUrl(switched) || "";
+    if (!(isPasswordLoginPage(nextUrl) || switched?.page?.type === "login_password")) {
+      throw new Error("WEB_PASSWORD_LOGIN_UNAVAILABLE: 网页登录没有进入密码页，未改用邮箱验证码");
+    }
+    if (nextUrl) await client.follow(nextUrl, { referer: authPage.finalUrl });
+    loginMethod = "password";
+    console.log("[3/5] Password login page reached.");
+    authenticated = await verifyPassword(client, {
+      authBase,
+      rl,
+      deviceId,
+      password,
+      referer: nextUrl || `${authBase}/log-in/password`,
     });
   } else if (isEmailVerificationPage(authPage.finalUrl)) {
     loginMethod = "email_otp";
@@ -1291,6 +1277,19 @@ async function loginChatgptWeb(client, { chatgptBase, authBase, email, rl, passw
     loginMethod,
     mfaVerified: mfaRequired,
   };
+}
+
+async function requestPasswordLogin(client, { authBase, email, deviceId, referer }) {
+  const sentinelHeaders = await createSentinelHeaders(client, {
+    authBase,
+    deviceId,
+    flow: "authorize_continue",
+  });
+  const { data } = await authJsonStep(client, authBase, "POST", "/api/accounts/authorize/continue", {
+    username: { value: email, kind: "email" },
+    screen_hint: "login",
+  }, { referer, headers: sentinelHeaders });
+  return data;
 }
 
 async function selectChatgptLoginWorkspaceIfNeeded(client, { authBase, payload }) {
