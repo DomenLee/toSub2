@@ -14,6 +14,18 @@ export async function createSync({ jobs, request, stateFile = "/data/sync-state.
     await fs.rename(stateFile + ".tmp", stateFile);
   };
   const emailOf = account => String(account.credentials?.email || account.extra?.email || account.name || "").trim().toLowerCase();
+  const remoteIdentity = account => ({
+    accessToken: account.credentials?.access_token || "",
+    refreshToken: account.credentials?.refresh_token || "",
+    proxyID: account.proxy_id ?? null,
+    proxyGroupID: account.proxy_group_id ?? null,
+    concurrency: account.concurrency ?? null,
+    priority: account.priority ?? null,
+    rateMultiplier: account.rate_multiplier ?? null,
+    status: account.status ?? null,
+    schedulable: account.schedulable ?? null,
+    groups: JSON.stringify(account.group_ids || account.groups || []),
+  });
 
   async function verifyBinding(job, original, workspaceID, previous) {
     const accountID = previous.accountID;
@@ -50,7 +62,17 @@ export async function createSync({ jobs, request, stateFile = "/data/sync-state.
       if (bindingOnly && previous.status === "synced" && !force && now() < previous.bindingCheckedAt + 60000) return;
       const payload = JSON.parse(raw);
       const original = payload.accounts?.[0];
-      if (payload.type !== "sub2api-data" || payload.accounts?.length !== 1 || original.platform !== "openai" || original.type !== "oauth" || emailOf(original) !== job.email.toLowerCase() || !original.credentials?.access_token || !original.credentials?.refresh_token) {
+      if (payload.type !== "sub2api-data" || payload.accounts?.length !== 1 || original.platform !== "openai" || original.type !== "oauth" || !original.credentials?.access_token || !original.credentials?.refresh_token) {
+        throw new Error("授权文件与账号不匹配，请重新授权");
+      }
+      if (emailOf(original) !== job.email.toLowerCase()) {
+        if (previous?.oauthStale && previous.accountID && String(previous.renamedFrom || "").toLowerCase() === emailOf(original) && String(previous.email || "").toLowerCase() === job.email.toLowerCase()) {
+          const account = await request(`/api/v1/admin/accounts/${previous.accountID}`);
+          assertBinding(account, { accountID: previous.accountID, email: job.email, workspace: previous.workspaceID, allowLegacy: true });
+          state[job.id] = { ...previous, status: "synced", error: undefined, oauthStale: true, bindingCheckedAt: now(), updatedAt: previous.updatedAt };
+          await save();
+          return;
+        }
         throw new Error("授权文件与账号不匹配，请重新授权");
       }
       const source = normalizeAccount(original);
@@ -128,6 +150,32 @@ export async function createSync({ jobs, request, stateFile = "/data/sync-state.
     async markDeleting(job) {
       state[job.id] = { ...state[job.id], email: job.email, deleting: true, status: "deleting", error: "删除尚未完成，自动同步已暂停；请在删除弹窗核对该账号并重试", updatedAt: new Date().toISOString() };
       await save();
+    },
+    async renameEmail(job, oldEmail) {
+      return run(async () => {
+        const previous = state[job.id];
+        const accountID = previous?.accountID;
+        const newEmail = String(job.email || "").trim();
+        const sourceEmail = String(oldEmail || "").trim();
+        if (!Number.isSafeInteger(accountID) || accountID <= 0) return { updated: false, unbound: true };
+        if (!previous.workspaceID || String(previous.workspaceID).startsWith("authsess_")) throw new Error(`账号 #${accountID}：历史同步记录缺少可信工作区，未修改远程邮箱`);
+        if (sourceEmail.toLowerCase() === newEmail.toLowerCase()) return { updated: true, accountID };
+        const endpoint = `/api/v1/admin/accounts/${accountID}`;
+        const current = await request(endpoint);
+        assertBinding(current, { accountID, email: sourceEmail, workspace: previous.workspaceID, allowLegacy: true });
+        const before = remoteIdentity(current);
+        const body = { account_ids: [accountID], credentials: { email: newEmail }, extra: { email: newEmail } };
+        if (String(current.name || "").trim().toLowerCase() === sourceEmail.toLowerCase()) body.name = newEmail;
+        const result = await request("/api/v1/admin/accounts/bulk-update", { method: "POST", body });
+        if (result?.success !== 1 || result.failed !== 0 || !result.success_ids?.includes(accountID)) throw new Error(`账号 #${accountID}：邮箱更新结果未确认，远程邮箱仍是原地址`);
+        const updated = await request(endpoint);
+        assertBinding(updated, { accountID, email: newEmail, workspace: previous.workspaceID, allowLegacy: true });
+        const after = remoteIdentity(updated);
+        if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error(`账号 #${accountID}：邮箱更新时令牌、分组、代理、额度或调度发生变化，请立即在 Sub2API 核对该母账号`);
+        state[job.id] = { ...previous, email: newEmail, renamedFrom: sourceEmail, oauthStale: true, status: "synced", error: undefined, bindingCheckedAt: now(), updatedAt: new Date(now()).toISOString() };
+        await save();
+        return { updated: true, accountID };
+      });
     },
     async forget(id) { delete state[id]; await save(); },
     revision(id) { return state[id]?.digest; },

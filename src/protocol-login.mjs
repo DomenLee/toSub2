@@ -5,6 +5,16 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import {
+  accountIdFromAccessToken,
+  buildChangeEmailHeaders,
+  emailChangeStatusText,
+  extractAccessToken,
+  isMailboxAddress,
+  runChangeEmail,
+  waitForMailboxOtp,
+} from "./change-email.mjs";
+import { fetchMailboxOtpCandidates, validateMailApiUrl } from "./mail-otp.mjs";
+import {
   browserIdentityForTlsProfile,
   shouldUseTlsTransport,
   TlsFingerprintTransport,
@@ -18,6 +28,7 @@ const DEFAULT_OUT = "tmp/chatgpt-protocol-session.json";
 const DEFAULT_SUB2API_OUT = "tmp/sub2api-import-oauth.json";
 const DEFAULT_TOTP_RESULT = "tmp/chatgpt-totp-setup.json";
 const DEFAULT_PASSWORD_ADD_RESULT = "tmp/chatgpt-password-add-result.json";
+const DEFAULT_EMAIL_CHANGE_RESULT = "tmp/chatgpt-email-change-result.json";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const PROFILE_MIN_AGE = 20;
 const PROFILE_MAX_AGE = 50;
@@ -497,6 +508,94 @@ async function run() {
       }
       return;
     }
+    if (args.changeEmail) {
+      const resultPath = path.resolve(args.emailChangeResult || DEFAULT_EMAIL_CHANGE_RESULT);
+      const replacement = readChangeEmailTarget();
+      const rl = readline.createInterface({ input, output });
+      try {
+        let client = null;
+        let web = null;
+        let email = args.email || "";
+        const checkpointPath = args.resumeCheckpoint ? path.resolve(args.resumeCheckpoint) : null;
+        let reauthAttempt = 0;
+        while (reauthAttempt < 2) {
+          if (checkpointPath && !client && reauthAttempt === 0) {
+            try {
+              const checkpoint = await readProtocolCheckpoint(checkpointPath);
+              if (email && checkpoint.email.toLowerCase() !== email.toLowerCase()) {
+                throw new Error("CHECKPOINT_INVALID: checkpoint email does not match the requested account");
+              }
+              email = checkpoint.email;
+              client = new ProtocolClient({
+                verbose: args.verbose,
+                jar: CookieJar.fromJSON(checkpoint.cookies),
+                transport,
+              });
+              web = checkpoint.web || null;
+              console.log(`[email-change] Reusing verified login checkpoint from ${checkpoint.stage}.`);
+            } catch (error) {
+              if (error?.code !== "ENOENT") {
+                console.log(`[email-change] Saved login checkpoint cannot be reused: ${error.message}`);
+              }
+              client = null;
+            }
+          }
+          email = email || (await ask(rl, "Email: "));
+          if (!email) throw new Error("Email is required");
+          if (email.toLowerCase() === replacement.email.toLowerCase()) {
+            console.log("[email-change-failed] status=same_email");
+            throw new Error(`EMAIL_CHANGE_same_email: ${emailChangeStatusText("same_email")}`);
+          }
+          if (!client) {
+            client = new ProtocolClient({ verbose: args.verbose, transport });
+            console.log("[1/3] Sign in before changing the account email");
+            web = await loginChatgptWeb(client, {
+              chatgptBase,
+              authBase,
+              email,
+              rl,
+              password: process.env.CHATGPT_LOGIN_PASSWORD || "",
+              totpSecret: process.env.CHATGPT_TOTP_SECRET || "",
+            });
+          }
+          try {
+            await changeChatgptEmail(client, {
+              chatgptBase,
+              email,
+              deviceId: web?.deviceId || client.jar.value("oai-did", `${chatgptBase}/`) || crypto.randomUUID(),
+              replacement,
+              resultPath,
+            });
+            break;
+          } catch (error) {
+            const message = String(error?.message || "");
+            const retryable = isExpiredCheckpointError(error)
+              || message.includes("EMAIL_CHANGE_reauth_required")
+              || message.includes("EMAIL_CHANGE_missing_session");
+            if (!retryable) throw error;
+            if (reauthAttempt >= 1) throw error;
+            reauthAttempt += 1;
+            console.log("[email-change] Web session expired; signing in once more before retrying the email change.");
+            client = null;
+            web = null;
+          }
+        }
+        if (checkpointPath && client) {
+          const saveCheckpoint = createCheckpointWriter(checkpointPath, {
+            client,
+            email,
+            chatgptBase,
+            authBase,
+            web,
+          });
+          await saveCheckpoint("email_verified", {});
+          console.log("[checkpoint] Updated verified login state after changing the email.");
+        }
+      } finally {
+        rl.close();
+      }
+      return;
+    }
     const rl = readline.createInterface({ input, output });
     const checkpointPath = path.resolve(args.checkpoint || args.resumeCheckpoint || `${sub2apiOutPath}.checkpoint.json`);
     try {
@@ -931,6 +1030,107 @@ async function setupChatgptTotp(client, { chatgptBase, email, rl, deviceId, resu
     console.log(`[warn] 2FA activation succeeded, but the follow-up status check failed: ${error.message}`);
   }
   console.log("[ok] 2FA setup activated");
+}
+
+function readChangeEmailTarget() {
+  const email = String(process.env.CHATGPT_NEW_EMAIL || "").trim();
+  const mailApiUrl = String(process.env.CHATGPT_NEW_MAIL_API_URL || "").trim();
+  const mailRequestBody = String(process.env.CHATGPT_NEW_MAIL_REQUEST_BODY || "");
+  if (!isMailboxAddress(email)) throw new Error("CHATGPT_NEW_EMAIL must be a valid email address");
+  if (!validateMailApiUrl(mailApiUrl)) throw new Error("CHATGPT_NEW_MAIL_API_URL must be an HTTP or HTTPS URL");
+  if (Buffer.byteLength(mailRequestBody) > 64 * 1024) throw new Error("CHATGPT_NEW_MAIL_REQUEST_BODY is too long");
+  return { email, mailApiUrl, mailRequestBody };
+}
+
+async function readChatgptAccessToken(client, chatgptBase) {
+  const page = await client.follow(`${chatgptBase}/`, { referer: `${chatgptBase}/` });
+  const fromPage = extractAccessToken(page.last?.text || "");
+  if (fromPage) return fromPage;
+  const session = await client.request("GET", `${chatgptBase}/api/auth/session`, {
+    referer: `${chatgptBase}/`,
+    accept: "application/json",
+  });
+  if (session.res.status < 200 || session.res.status >= 300) return "";
+  try {
+    const data = JSON.parse(session.text);
+    const token = data?.accessToken || data?.access_token || "";
+    return typeof token === "string" ? token : "";
+  } catch {
+    return "";
+  }
+}
+
+async function changeChatgptEmail(client, { chatgptBase, email, deviceId, replacement, resultPath }) {
+  console.log("[email-change] eligibility");
+  const accessToken = await readChatgptAccessToken(client, chatgptBase);
+  const accountId = accountIdFromAccessToken(accessToken);
+  const resolvedDeviceId = deviceId || client.jar.value("oai-did", `${chatgptBase}/`) || "";
+  if (!accessToken || !accountId || !resolvedDeviceId) {
+    console.log("[email-change-failed] status=missing_session");
+    throw new Error(`EMAIL_CHANGE_missing_session: ${emailChangeStatusText("missing_session")}`);
+  }
+  let baselineKeys = [];
+  let requireTimestamp = false;
+  try {
+    const existing = await fetchMailboxOtpCandidates(replacement.mailApiUrl, {
+      request: {
+        method: replacement.mailRequestBody ? "POST" : "GET",
+        body: replacement.mailRequestBody,
+      },
+    });
+    baselineKeys = existing.map((candidate) => candidate.key);
+  } catch {
+    requireTimestamp = true;
+    console.log("[email-change] Could not snapshot the new mailbox; only a timestamped code will be accepted.");
+  }
+  const notBefore = Date.now();
+  const outcome = await runChangeEmail({
+    oldEmail: email,
+    newEmail: replacement.email,
+    session: {
+      accessToken,
+      accountId,
+      deviceId: resolvedDeviceId,
+      sessionId: crypto.randomUUID(),
+    },
+    request: async (method, targetPath, body, session) => {
+      const result = await client.request(method, `${chatgptBase}${targetPath}`, {
+        headers: buildChangeEmailHeaders({ ...session, targetPath }),
+        json: body,
+        origin: chatgptBase,
+        referer: `${chatgptBase}/`,
+      });
+      let payload = {};
+      try {
+        payload = JSON.parse(result.text);
+      } catch {}
+      return { status: result.res.status, payload };
+    },
+    fetchOtp: async () => {
+      console.log("[email-change] waiting-otp");
+      return waitForMailboxOtp({
+        url: replacement.mailApiUrl,
+        request: {
+          method: replacement.mailRequestBody ? "POST" : "GET",
+          body: replacement.mailRequestBody,
+        },
+        notBefore,
+        baselineKeys,
+        requireTimestamp,
+      });
+    },
+  });
+  if (!outcome.ok) {
+    console.log(`[email-change-failed] status=${outcome.status}`);
+    throw new Error(`EMAIL_CHANGE_${outcome.status}: ${emailChangeStatusText(outcome.status)}`);
+  }
+  await writePrivateJson(resultPath, {
+    version: 1,
+    old_email: email,
+    new_email: replacement.email,
+    changed_at: new Date().toISOString(),
+  });
+  console.log("[email-change-changed]");
 }
 
 function chatgptMfaHeaders({ chatgptBase, accessToken, deviceId }, targetPath) {
@@ -2221,6 +2421,9 @@ function parseArgs(argv) {
     else if (item === "--web-only") args.webOnly = true;
     else if (item === "--setup-totp") args.setupTotp = true;
     else if (item === "--add-password") args.addPassword = true;
+    else if (item === "--change-email") args.changeEmail = true;
+    else if (item.startsWith("--email-change-result=")) args.emailChangeResult = item.slice("--email-change-result=".length);
+    else if (item === "--email-change-result") args.emailChangeResult = argv[++i];
     else if (item.startsWith("--password-add-result=")) args.passwordAddResult = item.slice("--password-add-result=".length);
     else if (item === "--password-add-result") args.passwordAddResult = argv[++i];
     else if (item.startsWith("--totp-result=")) args.totpResult = item.slice("--totp-result=".length);
@@ -2365,6 +2568,8 @@ Options:
   --totp-result <file>            Private 2FA setup result. Default: ${DEFAULT_TOTP_RESULT}
   --add-password                  Sign in and add a password to a passwordless account.
   --password-add-result <file>    Private add-password result. Default: ${DEFAULT_PASSWORD_ADD_RESULT}
+  --change-email                  Sign in and change the account email. Requires CHATGPT_NEW_EMAIL and CHATGPT_NEW_MAIL_API_URL.
+  --email-change-result <file>    Private email-change result. Default: ${DEFAULT_EMAIL_CHANGE_RESULT}
   --out <file>                    Output JSON path. Default: ${DEFAULT_OUT}
   --sub2api-out <file>            sub2api import JSON path. Default: ${DEFAULT_SUB2API_OUT}
   --output-mode <mode>            both, session, or sub2api. Default: both

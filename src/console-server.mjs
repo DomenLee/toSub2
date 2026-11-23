@@ -9,7 +9,9 @@ import { fileURLToPath } from "node:url";
 
 import react from "@vitejs/plugin-react";
 import { createServer as createViteServer } from "vite";
+import { emailChangeStatusText } from "./change-email.mjs";
 import { createCredentialStore } from "./credential-store.mjs";
+import { createEmailPool } from "./email-pool.mjs";
 import {
   fetchMailboxOtpCandidates,
   filterMailboxOtpCandidatesByRequestTime,
@@ -33,6 +35,7 @@ const JOB_META_FILENAME = "job-meta.json";
 const LOGIN_CHECKPOINT_FILENAME = "login-checkpoint.json";
 const TOTP_SETUP_RESULT_FILENAME = "totp-setup-result.json";
 const PASSWORD_ADD_RESULT_FILENAME = "password-add-result.json";
+const EMAIL_CHANGE_RESULT_FILENAME = "email-change-result.json";
 const SUB2API_MONITOR_FILENAME = "sub2api-monitor.json";
 const SUB2API_MONITOR_INTERVAL_MS = readDurationEnv("SUB2API_MONITOR_INTERVAL_MS", 5 * 60_000, 1_000);
 const SUB2API_AUTO_REPAIR_COOLDOWN_MS = readDurationEnv("SUB2API_AUTO_REPAIR_COOLDOWN_MS", 5 * 60_000, 0);
@@ -64,6 +67,7 @@ const OUTPUT_ROOT = path.resolve(
 );
 const SUB2API_MONITOR_PATH = path.join(OUTPUT_ROOT, SUB2API_MONITOR_FILENAME);
 const credentialStore = createCredentialStore();
+const emailPool = createEmailPool({ filePath: path.join(OUTPUT_ROOT, "email-pool.json") });
 const consoleToken = crypto.randomBytes(24).toString("base64url");
 const jobs = new Map();
 const customSmsPoolPositions = new Map();
@@ -215,6 +219,7 @@ async function handleApi(req, res, requestUrl) {
         tlsFingerprint: true,
         totpSetup: true,
         passwordAdd: true,
+        emailChange: true,
         forceRelogin: true,
       },
     });
@@ -223,6 +228,29 @@ async function handleApi(req, res, requestUrl) {
 
   if (req.headers["x-console-token"] !== consoleToken) {
     sendJson(res, 403, { error: "Invalid console token" });
+    return;
+  }
+
+  if (req.method === "GET" && requestUrl.pathname === "/api/email-pool") {
+    sendJson(res, 200, await emailPool.summary());
+    return;
+  }
+  if (req.method === "POST" && requestUrl.pathname === "/api/email-pool/import") {
+    const body = await readJson(req);
+    try {
+      sendJson(res, 200, await emailPool.importText(body.text, body.provider));
+    } catch (error) {
+      throw httpError(400, error.message || "邮箱池导入失败");
+    }
+    return;
+  }
+  if (req.method === "POST" && requestUrl.pathname === "/api/email-pool/delete") {
+    const body = await readJson(req);
+    try {
+      sendJson(res, 200, await emailPool.remove(body.emails));
+    } catch (error) {
+      throw httpError(409, error.message || "邮箱池删除失败");
+    }
     return;
   }
 
@@ -531,7 +559,7 @@ async function handleApi(req, res, requestUrl) {
     return;
   }
 
-  const match = /^\/api\/jobs\/([a-f0-9-]+)(?:\/(input|cancel|retry|regenerate|relogin|setup-2fa|add-password|logs|download|sms-number|luban-number))?$/.exec(requestUrl.pathname);
+  const match = /^\/api\/jobs\/([a-f0-9-]+)(?:\/(input|cancel|retry|regenerate|relogin|setup-2fa|add-password|change-email|logs|download|sms-number|luban-number))?$/.exec(requestUrl.pathname);
   if (!match) {
     sendJson(res, 404, { error: "Not found" });
     return;
@@ -597,6 +625,13 @@ async function handleApi(req, res, requestUrl) {
     sendJson(res, 200, { job: publicJob(job) });
     return;
   }
+  if (req.method === "POST" && action === "change-email") {
+    const body = await readJson(req);
+    const nextEmail = String(body.retryApply || body.retryRemote ? job.pendingNewEmail || job.email : body.newEmail || "").trim();
+    await withEmailPairLock(job.email, nextEmail, () => startEmailChange(job, body));
+    sendJson(res, 200, { job: publicJob(job) });
+    return;
+  }
   if (req.method === "POST" && action === "input") {
     const body = await readJson(req);
     await withEmailJobLock(job.email, () => submitJobInput(job, body));
@@ -652,6 +687,7 @@ async function startJob(email, credentials = {}, proxyUrl = null) {
   const checkpointPath = path.join(outputDir, LOGIN_CHECKPOINT_FILENAME);
   const totpResultPath = path.join(outputDir, TOTP_SETUP_RESULT_FILENAME);
   const passwordAddResultPath = path.join(outputDir, PASSWORD_ADD_RESULT_FILENAME);
+  const emailChangeResultPath = path.join(outputDir, EMAIL_CHANGE_RESULT_FILENAME);
   await fs.mkdir(outputDir, { recursive: true });
 
   const createdAt = new Date().toISOString();
@@ -669,6 +705,7 @@ async function startJob(email, credentials = {}, proxyUrl = null) {
     checkpointPath,
     totpResultPath,
     passwordAddResultPath,
+    emailChangeResultPath,
     logs: "",
     lastError: null,
     child: null,
@@ -708,6 +745,7 @@ async function startJob(email, credentials = {}, proxyUrl = null) {
     passwordAddedAt: null,
     pendingNewPassword: null,
     passwordAddResumesAuthorization: false,
+    ...blankEmailChangeState(),
     loginCheckpointAvailable: false,
     totpKnownEnabled: false,
     totpSetupAttempt: 0,
@@ -758,14 +796,18 @@ function scheduleQueuedJobs() {
         ? "totp_starting"
         : mode === "password_add"
           ? "password_add_starting"
-          : "starting";
+          : mode === "change_email"
+            ? "change_email_starting"
+            : "starting";
     job.prompt = job.queuedStartPrompt || (mode === "refresh"
       ? "正在使用已有刷新令牌直接生成新授权"
       : mode === "totp_setup"
         ? "正在重新验证账号并准备设置 2FA"
         : mode === "password_add"
           ? "正在重新验证账号并准备添加密码"
-          : "正在建立登录会话");
+          : mode === "change_email"
+            ? "正在重新验证账号并准备换绑邮箱"
+            : "正在建立登录会话");
     job.queuedAt = null;
     touch(job);
     void saveJobMetadata(job).catch(() => {});
@@ -777,7 +819,7 @@ function scheduleQueuedJobs() {
 
 async function prepareAndLaunchJob(job, mode, queueRunId) {
   try {
-    if (["full", "totp_setup", "password_add"].includes(mode) && job.mailApiUrl) await loadMailboxBaseline(job);
+    if (["full", "totp_setup", "password_add", "change_email"].includes(mode) && job.mailApiUrl) await loadMailboxBaseline(job);
     if (!isActive(job.status) || job.status === "queued" || job.queueRunId !== queueRunId) return;
     launchJob(job, { mode });
   } catch (error) {
@@ -785,6 +827,8 @@ async function prepareAndLaunchJob(job, mode, queueRunId) {
       restoreTotpSetupFailure(job, `准备 2FA 设置失败：${error.message}`);
     } else if (mode === "password_add") {
       restorePasswordAddFailure(job, `准备添加密码失败：${error.message}`);
+    } else if (mode === "change_email") {
+      restoreEmailChangeFailure(job, `准备换绑邮箱失败：${error.message}`);
     } else {
       failJob(job, `准备登录任务失败：${error.message}`);
     }
@@ -844,6 +888,17 @@ function launchJob(job, options = {}) {
           ...(job.passwordAddResumesAuthorization ? ["--resume-checkpoint", job.checkpointPath] : []),
           "--verbose",
         ]
+    : mode === "change_email"
+      ? [
+          PROTOCOL_SCRIPT,
+          "--email",
+          job.email,
+          "--change-email",
+          "--email-change-result",
+          job.emailChangeResultPath,
+          ...(job.emailChangeResumesAuthorization ? ["--resume-checkpoint", job.checkpointPath] : []),
+          "--verbose",
+        ]
     : [
         PROTOCOL_SCRIPT,
         "--email",
@@ -865,6 +920,9 @@ function launchJob(job, options = {}) {
       CHATGPT_LOGIN_PASSWORD: job.password || "",
       CHATGPT_TOTP_SECRET: job.totpSecret || "",
       CHATGPT_NEW_PASSWORD: mode === "password_add" ? job.pendingNewPassword || "" : "",
+      CHATGPT_NEW_EMAIL: mode === "change_email" ? job.pendingNewEmail || "" : "",
+      CHATGPT_NEW_MAIL_API_URL: mode === "change_email" ? job.pendingNewMailApiUrl || "" : "",
+      CHATGPT_NEW_MAIL_REQUEST_BODY: mode === "change_email" ? job.pendingNewMailRequestBody || "" : "",
       CHATGPT_PROXY_URL: job.proxyUrl || "",
       CHATGPT_PROXY_MAX_ATTEMPTS: String(Math.max(0, MAX_PROXY_RISK_RETRIES - (job.proxyRiskRetryCount || 0))),
       TOSUB2_TLS_PROFILE:
@@ -886,11 +944,13 @@ function launchJob(job, options = {}) {
       if (job.runId !== runId) return;
       if (mode === "totp_setup") restoreTotpSetupFailure(job, `无法启动 2FA 设置进程：${error.message}`);
       else if (mode === "password_add") restorePasswordAddFailure(job, `无法启动添加密码进程：${error.message}`);
+      else if (mode === "change_email") restoreEmailChangeFailure(job, `无法启动换绑进程：${error.message}`);
       else failJob(job, `无法启动登录进程：${error.message}`);
     });
   });
   child.on("close", (code, signal) => {
-    void withEmailJobLock(job.email, () => handleChildClose(job, { code, signal, mode, runId }))
+    const secondary = mode === "change_email" ? job.pendingNewEmail : "";
+    void withEmailPairLock(job.email, secondary, () => handleChildClose(job, { code, signal, mode, runId }))
       .catch((error) => {
         handleChildCloseFailure(job, mode, runId, error);
       });
@@ -908,6 +968,11 @@ async function handleChildClose(job, { code, signal, mode, runId }) {
   }
   if (mode === "password_add") {
     await finishPasswordAdd(job, code, signal);
+    scheduleQueuedJobs();
+    return;
+  }
+  if (mode === "change_email") {
+    await finishEmailChange(job, code, signal);
     scheduleQueuedJobs();
     return;
   }
@@ -940,7 +1005,7 @@ async function handleChildClose(job, { code, signal, mode, runId }) {
 }
 
 function handleChildCloseFailure(job, mode, runId, error) {
-  if (job.runId !== runId && !(["totp_setup", "password_add"].includes(mode) && job.runId === null)) return;
+  if (job.runId !== runId && !(["totp_setup", "password_add", "change_email"].includes(mode) && job.runId === null)) return;
   const message = `收尾处理失败：${error.message}`;
   if (mode === "totp_setup") {
     job.status = "completed";
@@ -950,6 +1015,8 @@ function handleChildCloseFailure(job, mode, runId, error) {
     job.runId = null;
   } else if (mode === "password_add") {
     restorePasswordAddFailure(job, message);
+  } else if (mode === "change_email") {
+    restoreEmailChangeFailure(job, message);
   } else {
     failJob(job, message);
   }
@@ -1290,6 +1357,302 @@ function restorePasswordAddFailure(job, message) {
   void saveJobMetadata(job).catch(() => {});
 }
 
+function blankEmailChangeState() {
+  return {
+    pendingNewEmail: null,
+    pendingNewMailApiUrl: null,
+    pendingNewMailRequestBody: "",
+    emailChangeError: null,
+    emailChangeRemotePending: false,
+    emailRenamedFrom: null,
+    emailChangeResumesAuthorization: false,
+    emailChangeFromPool: false,
+  };
+}
+
+function restoredEmailChangeState(metadata = {}) {
+  const pendingEmail = isEmail(metadata.pending_new_email) ? metadata.pending_new_email : null;
+  return {
+    pendingNewEmail: pendingEmail,
+    pendingNewMailApiUrl: validateMailApiUrl(metadata.pending_new_mail_api_url) ? metadata.pending_new_mail_api_url : null,
+    pendingNewMailRequestBody: typeof metadata.pending_new_mail_request_body === "string" ? metadata.pending_new_mail_request_body : "",
+    emailChangeError: metadata.email_change_error
+      || (String(metadata.status || "").startsWith("change_email") || metadata.queued_mode === "change_email"
+        ? "服务重启时换绑未完成，请重新发起"
+        : null),
+    emailChangeRemotePending: Boolean(metadata.email_change_remote_pending),
+    emailRenamedFrom: isEmail(metadata.email_renamed_from) ? metadata.email_renamed_from : null,
+    emailChangeResumesAuthorization: false,
+    emailChangeFromPool: Boolean(metadata.email_change_from_pool),
+  };
+}
+
+async function publishEmailChange(job, oldEmail) {
+  return { updated: false, unbound: true, oldEmail, email: job.email };
+}
+
+async function startEmailChange(job, body = {}) {
+  if (body.retryRemote === true || body.retryApply === true) {
+    if (!isTerminalStatus(job.status)) throw httpError(409, "账号仍在执行其他操作，完成或取消后再重试");
+    if (!job.emailChangeRemotePending && !job.pendingNewEmail && !(await fileExists(job.emailChangeResultPath))) {
+      throw httpError(409, "这个账号没有待完成的邮箱换绑");
+    }
+    await finishEmailChange(job, 0, null, { fromStoredResult: true });
+    return;
+  }
+  if (!canChangeEmail(job)) throw httpError(409, "账号仍在执行其他操作，完成或取消后再换绑邮箱");
+  const usePool = body.usePool === true;
+  let claimed = null;
+  let newEmail = String(body.newEmail || "").trim();
+  let mailRequestBody = typeof body.mailRequestBody === "string" ? body.mailRequestBody : "";
+  let mailApiUrl = String(body.mailApiUrl || "").trim();
+  if (usePool) {
+    claimed = await emailPool.claim({
+      jobId: job.id,
+      currentEmail: job.email,
+      blockedEmails: [...jobs.values()].map((item) => item.email),
+    });
+    if (!claimed) throw httpError(409, "邮箱池没有可分配的邮箱");
+    newEmail = claimed.email;
+    mailApiUrl = claimed.mailApiUrl;
+    mailRequestBody = claimed.mailRequestBody;
+  }
+  try {
+  if (!isEmail(newEmail)) throw httpError(400, "请输入有效的新邮箱");
+  if (newEmail.toLowerCase() === job.email.toLowerCase()) throw httpError(400, "新邮箱与当前邮箱相同");
+  if (Buffer.byteLength(mailRequestBody) > MAX_MAIL_REQUEST_BODY_BYTES) throw httpError(400, "新邮箱取码请求内容过长");
+  if (!validateMailApiUrl(mailApiUrl)) throw httpError(400, "新邮箱取码地址必须是 HTTP 或 HTTPS");
+  const duplicate = findJobByEmail(newEmail);
+  if (duplicate && duplicate.id !== job.id) throw httpError(409, "新邮箱已经对应另一个本地账号，请先处理重复账号");
+  const resumeAuthorization = Boolean(job.loginCheckpointAvailable && !job.resultSaved);
+  if (!job.resultSaved && !resumeAuthorization && !job.password && !job.hasPasswordCredential && !job.mailApiUrl) {
+    throw httpError(409, "缺少密码、收码地址或登录检查点，无法登录后换绑");
+  }
+  if (Object.hasOwn(body, "proxyUrl")) {
+    job.proxyUrl = normalizeProxyUrl(body.proxyUrl);
+    await saveStoredLoginCredentials(job.email, job);
+  }
+  stopMailPolling(job);
+  releaseSmsNumber(job, "idle");
+  job.queueRunId = null;
+  job.runId = crypto.randomUUID();
+  job.child?.kill("SIGTERM");
+  job.child = null;
+  job.currentPhone = null;
+  job.phoneError = null;
+  await removePrivateFile(job.emailChangeResultPath);
+  job.pendingNewEmail = newEmail;
+  job.pendingNewMailApiUrl = mailApiUrl;
+  job.pendingNewMailRequestBody = mailRequestBody;
+  job.emailChangeError = null;
+  job.emailChangeRemotePending = false;
+  job.emailChangeFromPool = Boolean(claimed);
+  job.emailChangeResumesAuthorization = resumeAuthorization;
+  job.proxyRiskRetryCount = 0;
+  job.proxyConnectionFailureCount = 0;
+  job.directTlsFallbackAttempted = false;
+  job.proxyRiskRestarting = false;
+  job.proxySessionAttemptIds.clear();
+  job.proxyAttemptParserTail = "";
+  job.lastError = null;
+  job.parserTail = "";
+  recordJobOperation(job, "change_email");
+  appendJobLog(job, claimed
+    ? "\n[email-change] 已从邮箱池分配新邮箱，开始换绑。邮箱地址、取码地址和验证码不会写入协议日志。\n"
+    : "\n[email-change] 开始换绑邮箱。新邮箱地址、取码地址和验证码不会写入协议日志。\n");
+  enqueueJob(job, "change_email", "正在重新验证账号并准备换绑邮箱");
+  } catch (error) {
+    if (claimed) await emailPool.release(claimed.email, job.id);
+    throw error;
+  }
+}
+
+async function finishEmailChange(job, code, signal, options = {}) {
+  const resumeAuthorization = Boolean(job.emailChangeResumesAuthorization);
+  let result = null;
+  try {
+    result = JSON.parse(await fs.readFile(job.emailChangeResultPath, "utf8"));
+  } catch (error) {
+    if (error?.code !== "ENOENT" && !job.emailChangeError) job.emailChangeError = "换绑结果无法读取";
+  }
+  const oldEmail = String(job.emailRenamedFrom || job.email || "");
+  const expectedNewEmail = String(result?.new_email || job.pendingNewEmail || "").trim();
+  if (result?.version === 1 && isEmail(expectedNewEmail) && job.email.toLowerCase() === expectedNewEmail.toLowerCase()) {
+    if (job.emailChangeRemotePending && job.emailRenamedFrom) await publishRenamedEmail(job, job.emailRenamedFrom);
+    if (!job.emailChangeRemotePending) job.emailChangeError = null;
+    await emailPool.consume(expectedNewEmail, job.id, job.emailRenamedFrom || job.email);
+    await removePrivateFile(job.emailChangeResultPath);
+    clearEmailChangeAttempt(job);
+    touch(job);
+    await saveJobMetadata(job);
+    return;
+  }
+  const changed = result?.version === 1
+    && result.old_email
+    && isEmail(expectedNewEmail)
+    && String(result.old_email).toLowerCase() === oldEmail.toLowerCase()
+    && String(result.new_email).toLowerCase() === expectedNewEmail.toLowerCase();
+  if (!changed) {
+    if (options.fromStoredResult && job.emailChangeRemotePending && job.emailRenamedFrom) {
+      await publishRenamedEmail(job, job.emailRenamedFrom);
+      if (!job.emailChangeRemotePending) {
+        job.emailChangeError = null;
+        job.prompt = "远程母账号邮箱已更新。分组、代理、额度和调度保持不变。";
+        if (job.resultSaved) job.status = "completed";
+      }
+      touch(job);
+      await saveJobMetadata(job);
+      return;
+    } else {
+      job.prompt = resumeAuthorization
+        ? "本次换绑未完成，原登录检查点仍可继续"
+        : "原授权文件仍可使用，本次换绑未完成";
+      job.emailChangeError ||= signal
+        ? "换绑进程被终止"
+        : code === 0
+          ? "换绑结果未确认"
+          : `换绑未完成：${emailChangeStatusText(job.emailChangeErrorStatus || "exception")}`;
+      job.status = resumeAuthorization ? "resume_available" : (job.resultSaved ? "completed" : "failed");
+      job.lastError = resumeAuthorization ? "点击继续流程可恢复 Codex 授权" : null;
+    }
+    if (job.emailChangeFromPool && job.pendingNewEmail) {
+      if (/占用/.test(job.emailChangeError || "")) await emailPool.block(job.pendingNewEmail, job.id);
+      else await emailPool.release(job.pendingNewEmail, job.id);
+    }
+    clearEmailChangeAttempt(job);
+    touch(job);
+    await saveJobMetadata(job);
+    return;
+  }
+
+  const duplicate = findJobByEmail(expectedNewEmail);
+  if (duplicate && duplicate.id !== job.id) {
+    job.pendingNewEmail = expectedNewEmail;
+    job.emailChangeError = `ChatGPT 邮箱已更换为 ${expectedNewEmail}，但本地已有相同邮箱的账号，未覆盖。请先处理重复账号后重试完成换绑。`;
+    job.prompt = "换绑已在 ChatGPT 完成，本地账号尚未改名";
+    job.status = resumeAuthorization ? "resume_available" : (job.resultSaved ? "completed" : "failed");
+    await emailPool.consume(expectedNewEmail, job.id, job.email);
+    clearEmailChangeAttempt(job, { keepPending: true });
+    touch(job);
+    await saveJobMetadata(job);
+    return;
+  }
+
+  const previousEmail = job.email;
+  const persisted = await moveAccountCredentials(previousEmail, expectedNewEmail, job);
+  job.email = expectedNewEmail;
+  job.mailApiUrl = job.pendingNewMailApiUrl || job.mailApiUrl;
+  job.mailRequestBody = job.pendingNewMailRequestBody || "";
+  job.mailSeenCandidateKeys.clear();
+  job.mailCandidateCounts.clear();
+  job.mailStatus = job.mailApiUrl ? "baseline" : "manual";
+  job.mailApiError = null;
+  job.emailRenamedFrom = previousEmail;
+  job.loginCheckpointAvailable = false;
+  await removePrivateFile(job.checkpointPath);
+  if (!persisted) {
+    job.emailChangeError = "ChatGPT 邮箱已更换，但新邮箱的登录凭据未能写入系统凭据存储。旧邮箱名下的凭据仍保留，请在重启前导出账号原始信息。";
+  }
+  const published = await publishRenamedEmail(job, previousEmail);
+  if (!job.emailChangeError) {
+    job.prompt = job.emailChangeRemotePending
+      ? "ChatGPT 和本地邮箱已更换，远程母账号邮箱尚未更新"
+      : published?.updated
+        ? "邮箱已换绑。本地账号、收码地址和远程母账号邮箱已更新，分组、代理、额度和调度未改。现有授权文件仍是旧邮箱，重新授权后会写入新邮箱。"
+        : "邮箱已换绑。本地账号邮箱和收码地址已更新。";
+  }
+  job.status = resumeAuthorization ? "resume_available" : "completed";
+  job.lastError = resumeAuthorization ? "ChatGPT 登录状态已保留，点击继续流程即可重新开始 Codex 授权" : null;
+  appendJobLog(job, "[email-change] 邮箱换绑已完成，敏感字段未写入日志。\n");
+  await emailPool.consume(expectedNewEmail, job.id, previousEmail);
+  clearEmailChangeAttempt(job);
+  await removePrivateFile(job.emailChangeResultPath);
+  touch(job);
+  await saveJobMetadata(job);
+}
+
+async function publishRenamedEmail(job, oldEmail) {
+  try {
+    const published = await publishEmailChange(job, oldEmail);
+    if (published?.updated) {
+      job.emailChangeRemotePending = false;
+      if (!job.emailChangeError) job.emailChangeError = null;
+      appendJobLog(job, `[email-change] 已更新远程母账号 #${published.accountID} 的邮箱，分组、代理、额度和调度保持不变。\n`);
+      return published;
+    }
+    job.emailChangeRemotePending = false;
+    return published;
+  } catch (error) {
+    job.emailChangeRemotePending = true;
+    job.emailChangeError = `ChatGPT 邮箱已更换。远程母账号邮箱未更新：${error.message} 请在当前账号重试更新远程邮箱，不要再次发起换绑。`;
+    job.prompt = "ChatGPT 和本地邮箱已更换，远程母账号邮箱尚未更新";
+    appendJobLog(job, "[email-change] 远程母账号邮箱未更新，本地换绑结果已保留。\n");
+    return null;
+  }
+}
+
+async function moveAccountCredentials(oldEmail, newEmail, job) {
+  const stored = await loadStoredLoginCredentials(oldEmail);
+  const next = {
+    password: job.password || stored.password || "",
+    totpSecret: job.totpSecret || stored.totpSecret || "",
+    proxyUrl: job.proxyUrl || stored.proxyUrl || "",
+  };
+  const persisted = await saveStoredLoginCredentials(newEmail, next);
+  if (!persisted) return false;
+  if (oldEmail.toLowerCase() !== newEmail.toLowerCase()) await deleteStoredLoginCredentials(oldEmail);
+  return true;
+}
+
+function clearEmailChangeAttempt(job, options = {}) {
+  job.runMode = null;
+  job.runId = null;
+  job.emailChangeResumesAuthorization = false;
+  job.emailChangeFromPool = false;
+  if (!options.keepPending) {
+    job.pendingNewEmail = null;
+    job.pendingNewMailApiUrl = null;
+    job.pendingNewMailRequestBody = "";
+  }
+}
+
+function restoreEmailChangeFailure(job, message) {
+  const resumeAuthorization = Boolean(job.emailChangeResumesAuthorization);
+  job.status = resumeAuthorization ? "resume_available" : (job.resultSaved ? "completed" : "failed");
+  job.prompt = resumeAuthorization
+    ? "本次换绑未完成，原登录检查点仍可继续"
+    : "原授权文件仍可使用，本次换绑未完成";
+  job.emailChangeError = message;
+  job.lastError = resumeAuthorization ? "点击继续流程可恢复 Codex 授权" : null;
+  if (job.emailChangeFromPool && job.pendingNewEmail) void emailPool.release(job.pendingNewEmail, job.id);
+  job.child?.kill("SIGTERM");
+  job.child = null;
+  clearEmailChangeAttempt(job);
+  touch(job);
+  void removePrivateFile(job.emailChangeResultPath).catch(() => {});
+  void saveJobMetadata(job).catch(() => {});
+}
+
+async function recoverCompletedEmailChange(job) {
+  if (!job.emailChangeResultPath || job.runMode === "change_email" || job.queuedMode === "change_email") return;
+  let result = null;
+  try {
+    result = JSON.parse(await fs.readFile(job.emailChangeResultPath, "utf8"));
+  } catch {
+    return;
+  }
+  if (result?.version !== 1 || !isEmail(result.new_email) || !isEmail(result.old_email)) return;
+  if (job.email.toLowerCase() === String(result.new_email).toLowerCase()) {
+    await removePrivateFile(job.emailChangeResultPath);
+    return;
+  }
+  if (job.email.toLowerCase() !== String(result.old_email).toLowerCase()) return;
+  job.pendingNewEmail = result.new_email;
+  job.pendingNewMailApiUrl = job.pendingNewMailApiUrl || job.mailApiUrl;
+  appendJobLog(job, "[restore] 检测到已完成的邮箱换绑结果，正在更新本地账号邮箱。\n");
+  await finishEmailChange(job, 0, null, { fromStoredResult: true });
+}
+
 async function loadTotpSetupResult(job) {
   const data = JSON.parse(await fs.readFile(job.totpResultPath, "utf8"));
   if (data?.version !== 1) throw new Error("2FA 设置结果文件格式不正确");
@@ -1455,7 +1818,8 @@ function consumeOutput(job, rawText) {
   if (Number.isFinite(latestMailRequestAt)) job.mailOtpRequestedAt = latestMailRequestAt;
   if (scan.includes("[checkpoint] Saved verified email login state.")
     || scan.includes("[checkpoint] Updated verified login state after adding the password.")
-    || scan.includes("[checkpoint] Updated verified login state after setting 2FA.")) {
+    || scan.includes("[checkpoint] Updated verified login state after setting 2FA.")
+    || scan.includes("[checkpoint] Updated verified login state after changing the email.")) {
     job.loginCheckpointAvailable = true;
   }
 
@@ -1507,6 +1871,11 @@ function consumeOutput(job, rawText) {
       touch(job);
       return;
     }
+    if (job.runMode === "change_email") {
+      job.emailChangeError = "换绑邮箱需要浏览器安全校验，请稍后重试或更换代理 IP";
+      touch(job);
+      return;
+    }
     requireBrowserSecurityCheck(job);
     return;
   }
@@ -1519,6 +1888,11 @@ function consumeOutput(job, rawText) {
     }
     if (job.runMode === "password_add") {
       job.passwordAddError = "账号资料校验未通过，密码尚未添加";
+      touch(job);
+      return;
+    }
+    if (job.runMode === "change_email") {
+      job.emailChangeError = "账号资料校验未通过，邮箱尚未更换";
       touch(job);
       return;
     }
@@ -1541,6 +1915,11 @@ function consumeOutput(job, rawText) {
     }
     if (job.runMode === "password_add") {
       job.passwordAddError = "添加密码时登录状态失效，请稍后重试";
+      touch(job);
+      return;
+    }
+    if (job.runMode === "change_email") {
+      job.emailChangeError = "换绑邮箱时登录状态失效，请稍后重试";
       touch(job);
       return;
     }
@@ -1658,6 +2037,20 @@ function consumeOutput(job, rawText) {
   if (scan.includes("[ok] Account password added and saved securely")) {
     setStage(job, "finalizing", "密码已添加，正在安全保存新密码");
   }
+  if (job.runMode === "change_email" && scan.includes("[email-change] eligibility")) {
+    setStage(job, "working", "正在检查是否可以换绑邮箱");
+  }
+  if (job.runMode === "change_email" && scan.includes("[email-change] waiting-otp")) {
+    setStage(job, "working", "已向新邮箱发送验证码，正在等待取码结果");
+  }
+  const emailChangeFailures = [...scan.matchAll(/\[email-change-failed\] status=([a-z0-9_]+)/g)];
+  if (job.runMode === "change_email" && emailChangeFailures.length) {
+    job.emailChangeError = emailChangeStatusText(emailChangeFailures.at(-1)[1]);
+    setStage(job, "working", job.emailChangeError);
+  }
+  if (job.runMode === "change_email" && scan.includes("[email-change-changed]")) {
+    setStage(job, "finalizing", "邮箱已更换，正在更新本地账号");
+  }
   const errorMatches = [...scan.matchAll(/\[error\]\s*([^\r\n]+)/g)];
   if (errorMatches.length) {
     const errorMessage = extractResponseMessage(errorMatches.at(-1)[1]);
@@ -1665,6 +2058,8 @@ function consumeOutput(job, rawText) {
       job.totpSetupError = errorMessage;
     } else if (job.runMode === "password_add") {
       job.passwordAddError = errorMessage;
+    } else if (job.runMode === "change_email") {
+      job.emailChangeError = job.emailChangeError || errorMessage;
     } else {
       failJob(job, errorMessage);
     }
@@ -1761,6 +2156,11 @@ function finishProxyRiskRetries(job, message) {
   }
   if (job.runMode === "password_add" || job.queuedMode === "password_add") {
     restorePasswordAddFailure(job, message);
+    scheduleQueuedJobs();
+    return;
+  }
+  if (job.runMode === "change_email" || job.queuedMode === "change_email") {
+    restoreEmailChangeFailure(job, message);
     scheduleQueuedJobs();
     return;
   }
@@ -2253,6 +2653,21 @@ async function cancelJob(job) {
     if (job.passwordAddError) {
       job.prompt = "原授权文件仍可使用，添加密码已取消";
       job.passwordAddError = "用户取消了本次添加密码";
+      touch(job);
+      await saveJobMetadata(job);
+    }
+    scheduleQueuedJobs();
+    return;
+  }
+  if (job.runMode === "change_email" || job.queuedMode === "change_email") {
+    stopMailPolling(job);
+    job.runId = crypto.randomUUID();
+    job.child?.kill("SIGTERM");
+    job.child = null;
+    await finishEmailChange(job, 1, "SIGTERM");
+    if (!job.emailRenamedFrom) {
+      job.prompt = job.resultSaved ? "原授权文件仍可使用，换绑已取消" : "换绑已取消，原登录检查点仍可继续";
+      job.emailChangeError = "用户取消了本次换绑";
       touch(job);
       await saveJobMetadata(job);
     }
@@ -2985,6 +3400,10 @@ function publicJob(job) {
     totpSetupError: job.totpSetupError || null,
     passwordAddError: job.passwordAddError || null,
     passwordAddedAt: job.passwordAddedAt || null,
+    canChangeEmail: canChangeEmail(job),
+    emailChangeError: job.emailChangeError || null,
+    emailChangeRemotePending: Boolean(job.emailChangeRemotePending),
+    pendingNewEmail: job.pendingNewEmail || null,
     smsProviderId: job.smsProviderId,
     smsProviderName: job.smsProviderName,
     smsServiceLabel: job.smsServiceLabel,
@@ -3041,6 +3460,10 @@ function canAddPassword(job) {
   if (job.status === "completed" && job.resultSaved) return true;
   return Boolean(job.loginCheckpointAvailable)
     && ["phone", "phone_otp", "resume_available", "failed", "canceled", "reauth_required"].includes(job.status);
+}
+
+function canChangeEmail(job) {
+  return ["completed", "failed", "canceled", "reauth_required", "resume_available"].includes(job.status);
 }
 
 function setStage(job, status, prompt) {
@@ -3199,6 +3622,13 @@ function findJobByEmail(email) {
   return listUniqueJobs().find((job) => job.email.toLowerCase() === key) || null;
 }
 
+async function withEmailPairLock(left, right, operation) {
+  const emails = [...new Set([left, right].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean))].sort();
+  if (!emails.length) return operation();
+  if (emails.length === 1) return withEmailJobLock(emails[0], operation);
+  return withEmailJobLock(emails[0], () => withEmailJobLock(emails[1], operation));
+}
+
 async function withEmailJobLock(email, operation) {
   const key = String(email || "").trim().toLowerCase();
   const previous = emailJobLocks.get(key) || Promise.resolve();
@@ -3274,6 +3704,7 @@ async function syncCompletedOutputs(force = false) {
       const checkpointPath = path.join(outputDir, LOGIN_CHECKPOINT_FILENAME);
       const totpResultPath = path.join(outputDir, TOTP_SETUP_RESULT_FILENAME);
       const passwordAddResultPath = path.join(outputDir, PASSWORD_ADD_RESULT_FILENAME);
+      const emailChangeResultPath = path.join(outputDir, EMAIL_CHANGE_RESULT_FILENAME);
       let metadata = {};
       try {
         metadata = JSON.parse(await fs.readFile(path.join(outputDir, JOB_META_FILENAME), "utf8"));
@@ -3316,6 +3747,7 @@ async function syncCompletedOutputs(force = false) {
           checkpointPath,
           totpResultPath,
           passwordAddResultPath,
+          emailChangeResultPath,
           logs: restoredOperation.log,
           lastError: restoredOperation.lastError,
           child: null,
@@ -3350,6 +3782,7 @@ async function syncCompletedOutputs(force = false) {
           pendingNewPassword: null,
           totpSetupResumesAuthorization: false,
           passwordAddResumesAuthorization: false,
+          ...restoredEmailChangeState(metadata),
           loginCheckpointAvailable: false,
           securityCheckRequired: Boolean(metadata.security_check_required),
           ...newSmsState(),
@@ -3405,6 +3838,7 @@ async function syncCompletedOutputs(force = false) {
           checkpointPath,
           totpResultPath,
           passwordAddResultPath,
+          emailChangeResultPath,
           logs: totpRecovery.recovered
             ? "[restore] 已从中断的 2FA 设置流程恢复并安全保存密钥。\n"
             : passwordRecovery.recovered
@@ -3447,6 +3881,7 @@ async function syncCompletedOutputs(force = false) {
           pendingNewPassword: null,
           totpSetupResumesAuthorization: false,
           passwordAddResumesAuthorization: false,
+          ...restoredEmailChangeState(metadata),
           loginCheckpointAvailable: true,
           securityCheckRequired: Boolean(metadata.security_check_required),
           ...restoredSmsState(metadata),
@@ -3497,6 +3932,7 @@ async function syncCompletedOutputs(force = false) {
           checkpointPath,
           totpResultPath,
           passwordAddResultPath,
+          emailChangeResultPath,
           logs: storedCredentialsMissing && restartable
             ? `[restore] 系统安全凭据存储中无法恢复${missingStoredCredentials.join("、")}，已停止自动启动。\n`
             : restartable
@@ -3541,12 +3977,15 @@ async function syncCompletedOutputs(force = false) {
           pendingNewPassword: null,
           totpSetupResumesAuthorization: false,
           passwordAddResumesAuthorization: false,
+          ...restoredEmailChangeState(metadata),
           loginCheckpointAvailable: Boolean(metadata.login_checkpoint_available),
           securityCheckRequired: Boolean(metadata.security_check_required),
           ...newSmsState(),
         });
       }
     }));
+    for (const restoredJob of jobs.values()) await recoverCompletedEmailChange(restoredJob);
+    await emailPool.releaseUnheld([...jobs.values()].filter((job) => job.emailChangeFromPool && job.pendingNewEmail).map((job) => job.pendingNewEmail));
   })().finally(() => {
     outputSyncPromise = null;
   });
@@ -4351,6 +4790,13 @@ async function saveJobMetadata(job) {
         totp_known_enabled: Boolean(job.totpKnownEnabled || job.totpSecret || job.hasTotpCredential),
         password_add_error: job.passwordAddError || null,
         password_added_at: job.passwordAddedAt || null,
+        pending_new_email: job.pendingNewEmail || null,
+        pending_new_mail_api_url: job.pendingNewMailApiUrl || null,
+        pending_new_mail_request_body: job.pendingNewMailRequestBody || null,
+        email_change_error: job.emailChangeError || null,
+        email_change_remote_pending: Boolean(job.emailChangeRemotePending),
+        email_change_from_pool: Boolean(job.emailChangeFromPool),
+        email_renamed_from: job.emailRenamedFrom || null,
         login_checkpoint_available: Boolean(job.loginCheckpointAvailable),
         proxy_risk_retry_count: Number(job.proxyRiskRetryCount || 0),
         proxy_connection_failure_count: Number(job.proxyConnectionFailureCount || 0),

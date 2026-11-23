@@ -26,13 +26,14 @@ export async function testUI(directory) {
   let clipboardText = "";
   let finishBatch;
   dom.window.navigator.clipboard = { writeText: async text => { clipboardText = text; } };
-  let jobs = [1, 2].map(index => ({ id: `11111111-1111-4111-8111-${String(index).padStart(12, "0")}`, email: `${index === 1 ? "alpha" : "beta"}@example.invalid`, status: "completed", canDownload: true, createdAt: new Date().toISOString(), prompt: "已完成", attempt: 1 }));
+  let jobs = [1, 2].map(index => ({ id: `11111111-1111-4111-8111-${String(index).padStart(12, "0")}`, email: `${index === 1 ? "alpha" : "beta"}@example.invalid`, status: "completed", canDownload: true, canChangeEmail: index === 1, createdAt: new Date().toISOString(), prompt: "已完成", attempt: 1 }));
+  const emailChangeRequests = [];
   const deletedRequests = [];
   dom.window.fetch = async (endpoint, options = {}) => {
     const body = options.body ? JSON.parse(options.body) : {};
     let result = {};
     if (endpoint === "/api/auth/session") result = { username: "admin", token: "FAKE_CONSOLE_TOKEN", expiresIn: 1800000 };
-    else if (endpoint === "/api/bootstrap") result = { token: "FAKE_CONSOLE_TOKEN", features: { bulkActions: true, linkedAccounts: true } };
+    else if (endpoint === "/api/bootstrap") result = { token: "FAKE_CONSOLE_TOKEN", features: { bulkActions: true, linkedAccounts: true, emailChange: true } };
     else if (endpoint === "/api/jobs/query" || String(endpoint).startsWith("/api/jobs?")) result = { jobs, selection: jobs, stats: { active: 0, queued: 0, completed: jobs.length }, pagination: { page: 1, totalPages: 1, total: jobs.length } };
     else if (endpoint === "/api/auto-sync") result = { items: [], repair: { enabled: false } };
     else if (endpoint === "/api/jobs/batch") {
@@ -42,6 +43,10 @@ export async function testUI(directory) {
     else if (endpoint === "/api/linked-accounts") {
       linkedRequests.push({ body, signal: options.signal });
       result = { items: body.ids.map(id => ({ id, email: jobs.find(job => job.id === id)?.email, accountID: id.endsWith("1") ? 42 : 43, status: accountMode, code: accountMode === "error" ? accountCode : undefined, error: accountMode === "error" ? accountCode === "legacy_workspace" ? "旧版会话标识 authsess_，请在自动同步面板查看结果或立即重试。" : "工作区不一致，请核对绑定后刷新。" : "", accountStatus: "active", schedulable: true, reauthRequired: false, quota: { total: 100, used: 12.5 }, groups: [{ id: 7, name: "Test Pool" }], usage: { weeklyLimit: id.endsWith("1") }, userCost: statsFail ? null : 12.345678, statsError: statsFail ? "累计扣费读取失败，请点击刷新重试" : "" })) };
+    }
+    else if (String(endpoint).endsWith("/change-email")) {
+      emailChangeRequests.push(body);
+      result = { job: { ...jobs[0], email: body.newEmail } };
     }
     else if (endpoint === "/api/jobs/delete-batch") {
       deletedRequests.push(body);
@@ -66,6 +71,36 @@ export async function testUI(directory) {
     assert.equal(document.querySelector('[aria-label="接码平台配置"]'), null, "SMS provider toolbar must stay hidden");
     assert.equal(document.querySelector('[aria-label="邮件接码请求配置"]'), null, "mail API toolbar must stay hidden");
     await until(() => document.querySelector(".job-row"));
+    assert.ok(button("邮箱池"), "email pool entry stays beside batch import");
+    const directChange = document.querySelector('button[aria-label="换绑邮箱 alpha@example.invalid"]');
+    assert.equal(directChange?.closest(".row-actions-extra"), null, "email change stays outside the more menu");
+    assert.ok(directChange?.closest(".row-actions"));
+    directChange.click();
+    await until(() => document.querySelector("#change-email-input"));
+    const setValue = (selector, value) => {
+      const input = document.querySelector(selector);
+      const prototype = input instanceof dom.window.HTMLTextAreaElement ? dom.window.HTMLTextAreaElement.prototype : dom.window.HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(prototype, "value").set.call(input, value);
+      input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    };
+    setValue("#change-email-input", "next@example.invalid");
+    setValue("#change-mail-url", "https://mail.example/latest?email=next@example.invalid");
+    await until(() => !button("开始换绑").disabled);
+    button("开始换绑").click();
+    await until(() => emailChangeRequests.length === 1);
+    assert.equal(emailChangeRequests[0].newEmail, "next@example.invalid");
+    assert.match(emailChangeRequests[0].mailApiUrl, /^https:\/\/mail\.example\/latest/);
+    assert.equal(emailChangeRequests[0].usePool, false);
+    await until(() => !document.querySelector('[role="dialog"]'));
+    button("邮箱池").click();
+    await until(() => document.querySelector("#email-pool-import"));
+    const provider = document.querySelector("#email-pool-provider");
+    assert.ok([...provider.options].some((option) => option.value === "assurivo" && option.textContent === "assurivo"));
+    Object.getOwnPropertyDescriptor(dom.window.HTMLSelectElement.prototype, "value").set.call(provider, "assurivo");
+    provider.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    await until(() => document.querySelector("#email-pool-import").placeholder.includes("查询码"));
+    button("关闭").click();
+    await until(() => !document.querySelector("#email-pool-import"));
     assert.equal(button("批量删除"), undefined, "no disabled bulk toolbar before selection");
     document.querySelector('input[aria-label="选择 alpha@example.invalid"]').click();
     await until(() => button("更多批量操作"));

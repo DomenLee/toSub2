@@ -72,6 +72,71 @@ try {
   assert.equal(calls.length, beforeMismatch);
   assert.equal(JSON.stringify(sync.status()).includes("FAKE_"), false);
 
+  const renameAccounts = [{
+    id: 42,
+    name: "old@example.invalid",
+    platform: "openai",
+    type: "oauth",
+    credentials: { email: "old@example.invalid", access_token: "KEEP_ACCESS", refresh_token: "KEEP_REFRESH", chatgpt_account_id: "workspace-a" },
+    extra: { email: "old@example.invalid", account_id: "workspace-a", chatgpt_account_id: "workspace-a" },
+    proxy_id: 7,
+    concurrency: 10,
+    priority: 1,
+    rate_multiplier: 1,
+    status: "active",
+    schedulable: true,
+    group_ids: [3],
+  }];
+  const renameCalls = [];
+  const renameRequest = async (endpoint, options = {}) => {
+    renameCalls.push({ endpoint, options });
+    if (endpoint.includes("?")) return { items: renameAccounts, pages: 1 };
+    if (endpoint.endsWith("/apply-oauth-credentials")) {
+      renameAccounts[0] = { ...renameAccounts[0], credentials: { ...renameAccounts[0].credentials, ...options.body.credentials } };
+      return renameAccounts[0];
+    }
+    if (endpoint.endsWith("/bulk-update")) {
+      const body = options.body;
+      assert.deepEqual(Object.keys(body).sort(), ["account_ids", "credentials", "extra", "name"]);
+      assert.deepEqual(body.credentials, { email: "new@example.invalid" });
+      assert.deepEqual(body.extra, { email: "new@example.invalid" });
+      assert.equal(body.name, "new@example.invalid");
+      renameAccounts[0] = {
+        ...renameAccounts[0],
+        name: body.name || renameAccounts[0].name,
+        credentials: { ...renameAccounts[0].credentials, ...body.credentials },
+        extra: { ...renameAccounts[0].extra, ...body.extra },
+      };
+      return { success: 1, failed: 0, success_ids: [42] };
+    }
+    return renameAccounts[0];
+  };
+  const renameJob = { id: crypto.randomUUID(), email: "old@example.invalid", status: "completed", resultSaved: true, outputPath: path.join(root, "rename-oauth.json") };
+  const renamePayload = { type: "sub2api-data", accounts: [{ name: "old@example.invalid", platform: "openai", type: "oauth", credentials: { email: "old@example.invalid", access_token: "KEEP_ACCESS", refresh_token: "KEEP_REFRESH", chatgpt_account_id: "workspace-a" } }] };
+  await fs.writeFile(renameJob.outputPath, JSON.stringify(renamePayload));
+  const renameJobs = new Map([[renameJob.id, renameJob]]);
+  const renameSync = await createSync({ jobs: renameJobs, request: renameRequest, stateFile: path.join(root, "rename-sync.json") });
+  await renameSync.sync(renameJob);
+  assert.equal(renameSync.status()[0].accountID, 42);
+  renameJob.email = "new@example.invalid";
+  const renamed = await renameSync.renameEmail(renameJob, "old@example.invalid");
+  assert.equal(renamed.updated, true);
+  assert.equal(renameAccounts[0].credentials.access_token, "KEEP_ACCESS");
+  assert.equal(renameAccounts[0].credentials.refresh_token, "KEEP_REFRESH");
+  assert.equal(renameAccounts[0].proxy_id, 7);
+  assert.deepEqual(renameAccounts[0].group_ids, [3]);
+  const callsAfterRename = renameCalls.length;
+  await renameSync.sync(renameJob, true);
+  assert.equal(renameCalls.length, callsAfterRename + 1);
+  assert.equal(renameCalls.at(-1).endpoint, "/api/v1/admin/accounts/42");
+  assert.equal(renameSync.status()[0].status, "synced");
+  renamePayload.accounts[0].credentials.email = "new@example.invalid";
+  renamePayload.accounts[0].credentials.access_token = "NEXT_ACCESS";
+  await fs.writeFile(renameJob.outputPath, JSON.stringify(renamePayload));
+  await renameSync.sync(renameJob, true);
+  assert.equal(renameAccounts[0].credentials.access_token, "NEXT_ACCESS");
+  assert.equal(renameSync.status()[0].status, "synced");
+
   process.env.CONSOLE_PASSWORD_FILE = path.join(root, "password");
   process.env.CREDENTIAL_KEY_FILE = path.join(root, "key");
   process.env.CREDENTIAL_ROOT = path.join(root, "credentials");

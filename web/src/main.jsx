@@ -115,6 +115,14 @@ function App() {
     intervalMinutes: 5,
   });
   const [uploadNotice, setUploadNotice] = useState("");
+  const [emailPool, setEmailPool] = useState({ available: 0, reserved: 0, used: 0, blocked: 0, items: [] });
+  const [emailPoolOpen, setEmailPoolOpen] = useState(false);
+  const [emailPoolText, setEmailPoolText] = useState("");
+  const [emailPoolProvider, setEmailPoolProvider] = useState("url");
+  const [emailPoolBusy, setEmailPoolBusy] = useState(false);
+  const [emailPoolError, setEmailPoolError] = useState("");
+  const [emailPoolNotice, setEmailPoolNotice] = useState("");
+  const [emailPoolSelected, setEmailPoolSelected] = useState(() => new Set());
   const [accountProxyUrl, setAccountProxyUrl] = useState(() => readLocalTextSetting(ACCOUNT_PROXY_STORAGE_KEY));
 
   useEffect(() => writeLocalJson(SMS_PROVIDER_SETTINGS_KEY, smsSettings), [smsSettings]);
@@ -137,6 +145,23 @@ function App() {
       stopped = true;
     };
   }, []);
+
+  async function refreshEmailPool() {
+    const data = await apiFetch(token, "/api/email-pool");
+    setEmailPool(data);
+    return data;
+  }
+
+  useEffect(() => {
+    if (!token || !features.emailChange) return undefined;
+    let stopped = false;
+    refreshEmailPool().catch((requestError) => {
+      if (!stopped) setEmailPoolError(requestError.message);
+    });
+    return () => {
+      stopped = true;
+    };
+  }, [token, features.emailChange]);
 
   useEffect(() => {
     if (!token) return;
@@ -778,6 +803,12 @@ function App() {
               : (pagination.total ? `共 ${pagination.total} 条任务` : "使用批量添加任务导入账号")}</p>
           </div>
           <div className="add-form batch-only-form">
+            {features.emailChange && (
+              <button className="secondary-button" type="button" onClick={() => { setEmailPoolError(""); setEmailPoolNotice(""); setEmailPoolOpen(true); }} disabled={!token}>
+                <MailCheck size={17} />
+                邮箱池{emailPool.available ? ` · ${emailPool.available} 可用` : ""}
+              </button>
+            )}
             <button className="primary-button batch-add-button" type="button" onClick={() => { setBatchError(""); setBatchOpen(true); }} disabled={!token}>
               <ListPlus size={17} />
               批量添加任务
@@ -1000,6 +1031,9 @@ function App() {
                     sub2apiUploadAvailable={Boolean(features.sub2apiUpload && sub2apiSettings.baseUrl && sub2apiSettings.adminApiKey)}
                     totpSetupAvailable={Boolean(features.totpSetup)}
                     passwordAddAvailable={Boolean(features.passwordAdd)}
+                    emailChangeAvailable={Boolean(features.emailChange)}
+                    emailPoolAvailable={emailPool.available || 0}
+                    onEmailPoolChanged={() => { refreshEmailPool().catch(() => {}); }}
                     forceReloginAvailable={Boolean(features.forceRelogin)}
                     accountProxyUrl={accountProxyUrl}
                     linkedAccountEnabled={Boolean(features.linkedAccounts)}
@@ -1417,6 +1451,98 @@ function App() {
           </form>
         </div>
       )}
+      {emailPoolOpen && (
+        <Dialog
+          title="邮箱池"
+          subtitle={`可用 ${emailPool.available || 0} · 换绑中 ${emailPool.reserved || 0} · 已使用 ${emailPool.used || 0}`}
+          busy={emailPoolBusy}
+          initialFocus="#email-pool-import"
+          onClose={() => { if (!emailPoolBusy) setEmailPoolOpen(false); }}
+          onSubmit={async (event) => {
+            event.preventDefault();
+            setEmailPoolBusy(true);
+            setEmailPoolError("");
+            setEmailPoolNotice("");
+            try {
+              const data = await apiFetch(token, "/api/email-pool/import", {
+                method: "POST",
+                body: JSON.stringify({ text: emailPoolText, provider: emailPoolProvider }),
+              });
+              setEmailPool(data);
+              setEmailPoolText("");
+              setEmailPoolSelected(new Set());
+              const skipped = (data.skipped?.length || 0) + (data.errors?.length || 0);
+              setEmailPoolNotice(`已导入 ${data.imported || 0} 个，更新 ${data.updated || 0} 个${skipped ? `，跳过 ${skipped} 行` : ""}`);
+            } catch (requestError) {
+              setEmailPoolError(requestError.message);
+            } finally {
+              setEmailPoolBusy(false);
+            }
+          }}
+        >
+          <div className="dialog-body">
+            <label className="batch-label" htmlFor="email-pool-provider">导入类型</label>
+            <select id="email-pool-provider" className="email-pool-provider" value={emailPoolProvider} disabled={emailPoolBusy} onChange={(event) => setEmailPoolProvider(event.target.value)}>
+              <option value="url">取码地址</option>
+              <option value="assurivo">assurivo</option>
+            </select>
+            <label className="batch-label" htmlFor="email-pool-import">提前导入换绑邮箱，每行一个</label>
+            <textarea id="email-pool-import" className="change-mail-body email-pool-import" rows="6" spellCheck="false" disabled={emailPoolBusy} value={emailPoolText} onChange={(event) => setEmailPoolText(event.target.value)} placeholder={emailPoolProvider === "assurivo" ? "name@icloud.com----查询码" : "new@example.com----https://mail.example/api/latest?email=new@example.com\n另一行可以在地址后加 ----POST内容"} />
+            <p className="dialog-hint">{emailPoolProvider === "assurivo" ? "assurivo 每行是“邮箱----查询码”。换绑时会向 assurivo.com 的 JSON 取件接口读取验证码。" : "取码地址每行是“邮箱----HTTP(S)取码地址”。"}换绑时选择“从邮箱池自动分配”，会按顺序取一个可用邮箱。查询码和取码地址不会出现在列表和日志里。</p>
+            {emailPoolNotice && <p className="dialog-hint" role="status">{emailPoolNotice}</p>}
+            {emailPoolError && <div className="dialog-error" role="alert"><CircleAlert size={15} />{emailPoolError}</div>}
+            <div className="email-pool-list" aria-label="邮箱池列表">
+              {(emailPool.items || []).length ? emailPool.items.map((item) => (
+                <label key={item.email} className={`email-pool-item status-${item.status}`}>
+                  <input
+                    type="checkbox"
+                    checked={emailPoolSelected.has(item.email)}
+                    disabled={emailPoolBusy || item.status === "reserved"}
+                    onChange={(event) => setEmailPoolSelected((current) => {
+                      const next = new Set(current);
+                      if (event.target.checked) next.add(item.email);
+                      else next.delete(item.email);
+                      return next;
+                    })}
+                  />
+                  <span>{item.email}</span>
+                  <small>{item.provider === "assurivo" ? "assurivo · " : ""}{emailPoolStatusText(item.status)}{item.mailbox ? ` · ${item.mailbox}` : ""}</small>
+                </label>
+              )) : <p className="dialog-hint">邮箱池是空的。</p>}
+            </div>
+            <div className="dialog-actions">
+              <button
+                type="button"
+                className="cancel-button"
+                disabled={emailPoolBusy || !emailPoolSelected.size}
+                onClick={async () => {
+                  setEmailPoolBusy(true);
+                  setEmailPoolError("");
+                  try {
+                    const data = await apiFetch(token, "/api/email-pool/delete", {
+                      method: "POST",
+                      body: JSON.stringify({ emails: [...emailPoolSelected] }),
+                    });
+                    setEmailPool(data);
+                    setEmailPoolSelected(new Set());
+                    setEmailPoolNotice(`已删除 ${data.deleted || 0} 个邮箱`);
+                  } catch (requestError) {
+                    setEmailPoolError(requestError.message);
+                  } finally {
+                    setEmailPoolBusy(false);
+                  }
+                }}
+              >
+                删除所选
+              </button>
+              <button type="button" className="cancel-button" disabled={emailPoolBusy} onClick={() => setEmailPoolOpen(false)}>关闭</button>
+              <button type="submit" className="primary-button" disabled={emailPoolBusy || !emailPoolText.trim()}>
+                {emailPoolBusy ? <LoaderCircle className="spin" size={16} /> : <ListPlus size={16} />}导入
+              </button>
+            </div>
+          </div>
+        </Dialog>
+      )}
       {batchOpen && (
         <Dialog title="批量添加任务" subtitle={`${countBatchLines(batchText)} 条，超出并发上限后自动排队`} busy={batchBusy} onClose={() => setBatchOpen(false)} onSubmit={createBatch} initialFocus="#batch-input">
             <label className="batch-label" htmlFor="batch-input">
@@ -1554,13 +1680,18 @@ function AccountSummary({ jobs, details, loading, error, updatedAt, onRefresh })
   );
 }
 
-function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggleSelected, selectionSupported, smsProviderAvailable, smsProvider, onUpload, sub2apiUploadAvailable, totpSetupAvailable, passwordAddAvailable, forceReloginAvailable, accountProxyUrl, linkedAccountEnabled, linkedAccount, linkedAccountLoading }) {
+function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggleSelected, selectionSupported, smsProviderAvailable, smsProvider, onUpload, sub2apiUploadAvailable, totpSetupAvailable, passwordAddAvailable, emailChangeAvailable, emailPoolAvailable, onEmailPoolChanged, forceReloginAvailable, accountProxyUrl, linkedAccountEnabled, linkedAccount, linkedAccountLoading }) {
   const terminal = ["completed", "failed", "canceled", "reauth_required", "resume_available"].includes(job.status);
   const [value, setValue] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [mobileCollapsed, setMobileCollapsed] = useState(terminal);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [copyNotice, setCopyNotice] = useState("");
+  const [changeEmailOpen, setChangeEmailOpen] = useState(false);
+  const [changeEmail, setChangeEmail] = useState({ newEmail: "", mailApiUrl: "", mailRequestBody: "" });
+  const [changeEmailError, setChangeEmailError] = useState("");
+  const [useEmailPool, setUseEmailPool] = useState(false);
+  const [poolAvailable, setPoolAvailable] = useState(emailPoolAvailable || 0);
   const actionsId = `job-actions-${job.id}`;
 
   useEffect(() => setValue(""), [job.status]);
@@ -1681,6 +1812,61 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
     }
   }
 
+  async function openChangeEmail() {
+    setChangeEmail({ newEmail: "", mailApiUrl: "", mailRequestBody: "" });
+    setChangeEmailError("");
+    setPoolAvailable(emailPoolAvailable || 0);
+    setUseEmailPool((emailPoolAvailable || 0) > 0);
+    setChangeEmailOpen(true);
+    try {
+      const data = await apiFetch(token, "/api/email-pool");
+      setPoolAvailable(data.available || 0);
+      setUseEmailPool((data.available || 0) > 0);
+    } catch {
+      setPoolAvailable(emailPoolAvailable || 0);
+    }
+  }
+
+  async function submitChangeEmail(event) {
+    event.preventDefault();
+    setSubmitting(true);
+    setChangeEmailError("");
+    try {
+      await apiFetch(token, `/api/jobs/${job.id}/change-email`, {
+        method: "POST",
+        body: JSON.stringify({
+          usePool: useEmailPool,
+          newEmail: useEmailPool ? "" : changeEmail.newEmail.trim(),
+          mailApiUrl: useEmailPool ? "" : changeEmail.mailApiUrl.trim(),
+          mailRequestBody: useEmailPool ? "" : changeEmail.mailRequestBody,
+          proxyUrl: accountProxyUrl.trim(),
+        }),
+      });
+      setChangeEmailOpen(false);
+      onEmailPoolChanged?.();
+      onError("");
+    } catch (requestError) {
+      setChangeEmailError(requestError.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function retryRemoteEmail() {
+    setSubmitting(true);
+    try {
+      await apiFetch(token, `/api/jobs/${job.id}/change-email`, {
+        method: "POST",
+        body: JSON.stringify({ retryRemote: true, retryApply: true }),
+      });
+      onError("");
+    } catch (requestError) {
+      onError(requestError.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function copyTotpSecret() {
     try {
       await navigator.clipboard.writeText(job.totpSetupSecret || "");
@@ -1759,6 +1945,8 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
         )}
         {job.totpSetupError && <div className="row-error">2FA：{extractResponseMessage(job.totpSetupError)}</div>}
         {job.passwordAddError && <div className="row-error">添加密码：{extractResponseMessage(job.passwordAddError)}</div>}
+        {job.emailChangeError && <div className="row-error">换绑邮箱：{extractResponseMessage(job.emailChangeError)}</div>}
+        {job.pendingNewEmail && <div className="phone-target"><Mail size={13} />正在换绑到：<strong>{job.pendingNewEmail}</strong></div>}
         {job.mailApiError && job.status === "email_otp" && <div className="mail-error">{job.mailApiError}</div>}
         {job.currentPhone && ["working", "phone", "phone_otp"].includes(job.status) && (
           <div className="phone-target"><Smartphone size={13} />当前手机号：<strong>{job.currentPhone}</strong></div>
@@ -1845,6 +2033,18 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
       </td>
       <td className="actions-cell" data-label="操作">
         <div className="row-actions">
+          {emailChangeAvailable && job.canChangeEmail && (
+            <button type="button" className="icon-button change-email-button" onClick={openChangeEmail} disabled={submitting} title="换绑邮箱" aria-label={`换绑邮箱 ${job.email}`}>
+              {submitting ? <LoaderCircle className="spin" size={16} /> : <MailCheck size={16} />}
+              换绑邮箱
+            </button>
+          )}
+          {emailChangeAvailable && (job.emailChangeRemotePending || job.pendingNewEmail) && terminal && (
+            <button type="button" className="icon-button" onClick={retryRemoteEmail} disabled={submitting} title="重试完成换绑或更新远程邮箱">
+              {submitting ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
+              重试换绑收尾
+            </button>
+          )}
           {job.canDownload && (
             <button type="button" className="download-button" onClick={download}>
               <Download size={16} />下载
@@ -1910,6 +2110,37 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
           )}
         </div>
       </td>
+      {changeEmailOpen && (
+        <Dialog
+          title="换绑邮箱"
+          subtitle={job.email}
+          busy={submitting}
+          initialFocus="#change-email-input"
+          onClose={() => { if (!submitting) setChangeEmailOpen(false); }}
+          onSubmit={submitChangeEmail}
+        >
+          <div className="dialog-body">
+            <div className="change-email-mode" role="radiogroup" aria-label="换绑邮箱来源">
+              <label><input type="radio" name={`change-email-mode-${job.id}`} checked={useEmailPool} disabled={submitting || poolAvailable < 1} onChange={() => setUseEmailPool(true)} />从邮箱池自动分配{poolAvailable ? `（可用 ${poolAvailable} 个）` : "（暂无可用邮箱）"}</label>
+              <label><input type="radio" name={`change-email-mode-${job.id}`} checked={!useEmailPool} disabled={submitting} onChange={() => setUseEmailPool(false)} />手动填写</label>
+            </div>
+            <label className="batch-label" htmlFor="change-email-input">新邮箱</label>
+            <input id="change-email-input" className="change-email-input" value={changeEmail.newEmail} autoComplete="off" spellCheck="false" disabled={submitting || useEmailPool} onChange={(event) => setChangeEmail((current) => ({ ...current, newEmail: event.target.value }))} placeholder="new@example.com" />
+            <label className="batch-label" htmlFor="change-mail-url">新邮箱取码地址</label>
+            <input id="change-mail-url" className="change-email-input" value={changeEmail.mailApiUrl} autoComplete="off" spellCheck="false" disabled={submitting || useEmailPool} onChange={(event) => setChangeEmail((current) => ({ ...current, mailApiUrl: event.target.value }))} placeholder="https://mail.example/api/latest?email=new@example.com" />
+            <label className="batch-label" htmlFor="change-mail-body">取码 POST 内容（GET 取码可留空）</label>
+            <textarea id="change-mail-body" className="change-mail-body" rows="3" value={changeEmail.mailRequestBody} spellCheck="false" disabled={submitting || useEmailPool} onChange={(event) => setChangeEmail((current) => ({ ...current, mailRequestBody: event.target.value }))} />
+            <p className="dialog-hint">{useEmailPool ? "将按邮箱池顺序分配下一个可用邮箱，并登录当前账号完成换绑。" : "将登录当前账号，向新邮箱发送验证码并完成 ChatGPT 换绑。"}成功后本地邮箱和取码地址改为新邮箱。已绑定的 Sub2API 母账号只更新邮箱，不改分组、代理、额度和调度。密码、验证码和取码地址不会写入日志。</p>
+            {changeEmailError && <div className="dialog-error" role="alert"><CircleAlert size={15} />{changeEmailError}</div>}
+            <div className="dialog-actions">
+              <button type="button" className="cancel-button" disabled={submitting} onClick={() => setChangeEmailOpen(false)}>取消</button>
+              <button type="submit" className="primary-button" disabled={submitting || (useEmailPool ? poolAvailable < 1 : !changeEmail.newEmail.trim() || !changeEmail.mailApiUrl.trim())}>
+                {submitting ? <LoaderCircle className="spin" size={16} /> : <MailCheck size={16} />}开始换绑
+              </button>
+            </div>
+          </div>
+        </Dialog>
+      )}
     </tr>
   );
 }
@@ -1952,6 +2183,7 @@ function StatusBadge({ status }) {
     mfa_otp: ["待 2FA", <ShieldCheck size={14} />],
     totp_starting: ["准备 2FA", <LoaderCircle className="spin" size={14} />],
     password_add_starting: ["准备密码", <LoaderCircle className="spin" size={14} />],
+    change_email_starting: ["准备换绑", <LoaderCircle className="spin" size={14} />],
     totp_setup_otp: ["激活 2FA", <ShieldCheck size={14} />],
     email_otp: ["待邮箱码", <Mail size={14} />],
     phone: ["待手机号", <Smartphone size={14} />],
@@ -2104,6 +2336,10 @@ async function readResponse(response) {
   return data;
 }
 
+function emailPoolStatusText(status) {
+  return { available: "可用", reserved: "换绑中", used: "已使用", blocked: "不可用" }[status] || status;
+}
+
 function shortId(id) {
   return `任务 ${id.slice(0, 8)}`;
 }
@@ -2133,6 +2369,7 @@ function operationLabel(type) {
     resume: "继续中断流程",
     setup_2fa: "设置 2FA",
     add_password: "添加密码",
+    change_email: "换绑邮箱",
     account_update: "更新账号资料",
     proxy_update: "更新代理 IP",
   })[type] || "账号操作";

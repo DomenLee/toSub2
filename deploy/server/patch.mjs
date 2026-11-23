@@ -8,7 +8,7 @@ async function replace(file, before, after) {
   if (!source.includes(before) || source.indexOf(before) !== source.lastIndexOf(before)) throw new Error(`Upstream changed; review before deployment: ${file}`);
   await fs.writeFile(target, source.replace(before, after));
 }
-await replace("src/console-server.mjs", 'import react from "@vitejs/plugin-react";\nimport { createServer as createViteServer } from "vite";\nimport { createCredentialStore } from "./credential-store.mjs";', 'import { authorize, serveStatic, createCredentialStore } from "./server-security.mjs";\nimport { createSync, createRequest } from "./server-sync.mjs";\nimport { createRepair } from "./server-repair.mjs";');
+await replace("src/console-server.mjs", 'import react from "@vitejs/plugin-react";\nimport { createServer as createViteServer } from "vite";\nimport { emailChangeStatusText } from "./change-email.mjs";\nimport { createCredentialStore } from "./credential-store.mjs";', 'import { emailChangeStatusText } from "./change-email.mjs";\nimport { authorize, serveStatic, createCredentialStore } from "./server-security.mjs";\nimport { createSync, createRequest } from "./server-sync.mjs";\nimport { createRepair } from "./server-repair.mjs";');
 await replace("src/console-server.mjs", "const MAX_ACTIVE_JOBS = 20;", "const MAX_ACTIVE_JOBS = 2;\nprocess.umask(0o077);");
 await replace("src/console-server.mjs", "const jobs = new Map();", "const jobs = new Map();\nconst accountSync = await createSync({ jobs, request: await createRequest() });");
 await replace("src/console-server.mjs", `const vite = await createViteServer({
@@ -138,6 +138,11 @@ await replace("src/console-server.mjs", '  if (req.method === "POST" && requestU
   }
   if (req.method === "POST" && requestUrl.pathname === "/api/linked-accounts") {`);
 await replace("src/console-server.mjs", "        linkedAccounts: true,", "        linkedAccounts: true,\n        usageInsights: true,");
+await replace("src/console-server.mjs", `async function publishEmailChange(job, oldEmail) {
+  return { updated: false, unbound: true, oldEmail, email: job.email };
+}`, `async function publishEmailChange(job, oldEmail) {
+  return accountSync.renameEmail(job, oldEmail);
+}`);
 await replace("web/src/main.jsx", 'import SyncPanel from "./SyncPanel.jsx";', 'import SyncPanel from "./SyncPanel.jsx";\nimport { UsageMetrics, UsagePanel } from "./Usage.jsx";');
 await replace("web/src/main.jsx", '        <div className="quota-metric"><span>配置总额度</span><strong>{totalQuota.text}</strong>{totalQuota.count > 0 && <small>覆盖 {totalQuota.count}/{jobs.length} 个账号</small>}</div>\n        <div className="quota-metric"><span>配置额度已用</span><strong>{usedQuota.text}</strong>{usedQuota.count > 0 && <small>覆盖 {usedQuota.count}/{jobs.length} 个账号</small>}</div>', '        <UsageMetrics items={items.map(({ item }) => item)} />');
 await replace("web/src/main.jsx", 'OAuth 订阅额度未提供；累计扣费见账号详情。在线指账号可调度。', '额度仅统计 15 分钟内且未过重置时间的快照；缺失或过期请在账号详情更新。在线指账号可调度。');
