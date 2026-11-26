@@ -16,6 +16,7 @@ let fail = false;
 const request = async (endpoint, options = {}) => {
   calls.push({ endpoint, options });
   if (fail) throw new Error("Fake upstream unavailable");
+  if (endpoint === "/api/v1/admin/groups/all?platform=openai") return [{ id: 2, platform: "openai", status: "active", rate_multiplier: 1.8 }];
   if (endpoint.includes("?")) return { items: accounts, pages: 1 };
   if (endpoint === "/api/v1/admin/accounts" && options.method === "POST") { accounts = [{ ...options.body, id: 12 }]; return accounts[0]; }
   if (endpoint.endsWith("/apply-oauth-credentials")) { accounts[0] = { ...accounts[0], credentials: { ...accounts[0].credentials, ...options.body.credentials } }; return accounts[0]; }
@@ -28,8 +29,8 @@ try {
   await sync.sync(job);
   assert.equal(sync.status()[0].status, "synced");
   const created = calls.find(call => call.options.method === "POST").options;
-  assert.equal(created.body.group_ids, undefined);
-  assert.equal(created.body.proxy_id, undefined);
+  assert.deepEqual(created.body.group_ids, [2]);
+  assert.equal(created.body.proxy_id, null);
   assert.equal(created.body.concurrency, 10);
   assert.ok(created.headers["Idempotency-Key"]);
   const count = calls.length;

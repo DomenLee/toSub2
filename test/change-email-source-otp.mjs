@@ -116,7 +116,8 @@ try {
     body: JSON.stringify({ usePool: true }),
   });
   assert.equal(started.status, 200, await started.clone().text());
-  await waitForJob(headers, jobId, (job) => job.email === "next-box@example.com" && job.status === "completed");
+  const completed = await waitForJob(headers, jobId, (job) => job.email === "next-box@example.com" && job.status === "completed");
+  assert.equal(completed.autoRetryPaused, false, "source mailbox must continue automatic verification");
   const logText = await (await fetch(`${baseUrl}/api/jobs/${jobId}/logs`, { headers })).text();
   assert.match(logText, /已从收码接口自动取得新验证码并提交/);
   assert.equal(logText.includes("654321"), false);

@@ -84,6 +84,22 @@ try {
   assert.equal((await fs.stat(options.stateFile)).mode & 0o777, 0o600);
 
   time += 24 * 60 * 60_000;
+  job.autoRetryPaused = true;
+  for (const status of ["email_otp", "failed", "canceled", "resume_available", "completed"]) {
+    job.status = status;
+    await restored.check();
+    assert.equal(starts, 3, "manual email pause must prevent every automatic renewal");
+    assert.equal(restored.status().items[0].status, "waiting");
+    assert.equal(restored.status().items[0].attempts, 0, "paused jobs must not consume retry attempts");
+  }
+  const pausedRestart = await createRepair(options);
+  time += 24 * 60 * 60_000;
+  await pausedRestart.check();
+  assert.equal(starts, 3, "restart and expired cooldown must not renew a paused job");
+  assert.match(pausedRestart.status().items[0].message, /人工.*不再自动重试/);
+  await pausedRestart.stop();
+  job.autoRetryPaused = false;
+  job.status = "failed";
   eligible = false;
   await restored.check();
   assert.equal(starts, 3);

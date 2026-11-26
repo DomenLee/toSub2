@@ -55,6 +55,12 @@ export async function createRepair({ jobs, sync, request, renew, enabled = proce
           record.startedAt = null;
           record.recoveredAt = item.updatedAt;
         }
+        if (job.autoRetryPaused) {
+          record.status = "waiting";
+          record.message = "该账号已转人工处理，后续不再自动重试；请在任务详情输入邮箱验证码或手动重新授权";
+          record.startedAt = null;
+          continue;
+        }
         if (record.startedAt && !terminal.has(job.status)) {
           record.status = manual.has(job.status) ? "waiting" : "running";
           record.message = manual.has(job.status) ? "正在等待验证码或登录验证；若任务未自动继续，请在任务详情完成验证" : "正在自动重新登录并授权";

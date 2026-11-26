@@ -173,6 +173,8 @@ try {
   assert.equal(interrupted.status, "failed");
   assert.equal(interrupted.canDownload, false);
   assert.equal(interrupted.canRetry, true);
+  assert.equal(interrupted.autoRetryPaused, true);
+  assert.equal(interrupted.autoRepairEligible, false);
   assert.equal(interrupted.lastOperationType, "initial_authorization");
   assert.match(interrupted.prompt, /服务重启中断/);
   const recoveredPassword = page.jobs.find((job) => job.id === interruptedPasswordId);
