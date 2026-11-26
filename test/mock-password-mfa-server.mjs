@@ -18,6 +18,15 @@ let passwordVerifySentinelCount = 0;
 let signinConnection = "";
 let signinScreenHint = "";
 let oauthTokenRequests = 0;
+let authSession = "";
+let authQuery = "";
+let passwordPageVisits = 0;
+let passwordVerifyCount = 0;
+let emailOtpValidationCount = 0;
+let emailOtpResendCount = 0;
+let authorizeContinueCount = 0;
+let mfaVerificationCount = 0;
+let emailChangeBeginCount = 0;
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || "/", base);
@@ -48,6 +57,13 @@ const server = http.createServer(async (req, res) => {
       signinConnection,
       signinScreenHint,
       oauthTokenRequests,
+      passwordPageVisits,
+      passwordVerifyCount,
+      emailOtpValidationCount,
+      emailOtpResendCount,
+      authorizeContinueCount,
+      mfaVerificationCount,
+      emailChangeBeginCount,
     });
   }
   if (req.method === "POST" && url.pathname === "/api/auth/signin/openai") {
@@ -56,14 +72,41 @@ const server = http.createServer(async (req, res) => {
     signinConnection = url.searchParams.get("connection") || "";
     signinScreenHint = url.searchParams.get("screen_hint") || "";
     selectedEmail = url.searchParams.get("login_hint") || selectedEmail;
-    const passwordMode = selectedEmail !== "email-mfa@example.com";
+    passwordPageVisits = 0;
+    passwordVerifyCount = 0;
+    emailOtpValidationCount = 0;
+    emailOtpResendCount = 0;
+    authorizeContinueCount = 0;
+    mfaVerificationCount = 0;
+    emailChangeBeginCount = 0;
+    authSession = crypto.randomUUID();
+    authQuery = new URLSearchParams({ auth_page: `mock+context/${authSession}=`, state: "mock-state" }).toString();
+    const passwordMode = selectedEmail !== "email-mfa@example.com" && !selectedEmail.startsWith("switch-");
     return sendJson(res, 200, { url: `${base}/api/accounts/authorize?mode=${passwordMode ? "password" : "email"}` });
   }
   if (req.method === "GET" && url.pathname === "/api/accounts/authorize") {
-    return redirect(res, `${base}${url.searchParams.get("mode") === "email" ? "/email-verification" : "/log-in/password"}`);
+    res.setHeader("set-cookie", `auth-flow=${authSession}; Path=/; HttpOnly`);
+    return redirect(res, `${base}${url.searchParams.get("mode") === "email" ? "/email-verification" : "/log-in/password"}?${authQuery}`);
   }
   if (req.method === "GET" && ["/log-in/password", "/email-verification"].includes(url.pathname)) {
+    if (url.pathname === "/log-in/password") {
+      passwordPageVisits += 1;
+      if (selectedEmail.startsWith("switch-")) {
+        if (!hasAuthContext(req, url) || req.headers.referer !== `${base}/email-verification?${authQuery}`) {
+          return sendJson(res, 400, { error: { message: "password switch lost the original auth context" } });
+        }
+        if (selectedEmail === "switch-unavailable@example.com") return redirect(res, `${base}/email-verification?${authQuery}`);
+      }
+    }
     return sendText(res, 200, `<html><title>${url.pathname === "/log-in/password" ? "Enter password" : "Check inbox"}</title></html>`, "text/html");
+  }
+  if (req.method === "POST" && url.pathname === "/api/accounts/authorize/continue") {
+    authorizeContinueCount += 1;
+    return sendJson(res, 404, { error: { message: "password switching uses page navigation" } });
+  }
+  if (req.method === "POST" && url.pathname === "/api/accounts/passwordless/send-otp") {
+    emailOtpResendCount += 1;
+    return sendJson(res, 200, {});
   }
   if (req.method === "POST" && url.pathname === "/backend-api/sentinel/req") {
     const payload = parseJson(body);
@@ -78,6 +121,10 @@ const server = http.createServer(async (req, res) => {
     });
   }
   if (req.method === "POST" && url.pathname === "/api/accounts/password/verify") {
+    passwordVerifyCount += 1;
+    if (selectedEmail.startsWith("switch-") && (passwordPageVisits !== 1 || !hasAuthContext(req, new URL(req.headers.referer || "/", base)))) {
+      return sendJson(res, 400, { error: { message: "password verification lost the original auth context" } });
+    }
     const payload = parseJson(body);
     if (!hasPasswordVerifySentinel(req) || payload.password !== password || Object.keys(payload).length !== 1) {
       return sendJson(res, 401, { error: { message: "invalid password" } });
@@ -86,6 +133,7 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, mfaPayload());
   }
   if (req.method === "POST" && url.pathname === "/api/accounts/email-otp/validate") {
+    emailOtpValidationCount += 1;
     const payload = parseJson(body);
     if (payload.code !== "123456" || Object.keys(payload).length !== 1) {
       return sendJson(res, 400, { error: { message: "invalid email code" } });
@@ -127,6 +175,7 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, { "oai-client-auth-session": mfaSession() });
   }
   if (req.method === "POST" && url.pathname === "/api/accounts/mfa/verify") {
+    mfaVerificationCount += 1;
     const payload = parseJson(body);
     const acceptedCodes = [-1, 0, 1].map((offset) => generateTotp(totpSecret, Date.now() + offset * 30_000));
     if (!hasPasswordVerifySentinel(req) || payload.type !== "totp" || payload.id !== factorId || !acceptedCodes.includes(payload.code)) {
@@ -198,6 +247,8 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, { eligible: true });
   }
   if (req.method === "POST" && url.pathname === "/backend-api/accounts/change_email/begin") {
+    emailChangeBeginCount += 1;
+    if (!chatgptLoginComplete || mfaVerificationCount !== 1) return sendJson(res, 401, { error: { message: "web login and 2FA required" } });
     return sendJson(res, 200, { success: true });
   }
   if (req.method === "POST" && url.pathname === "/backend-api/accounts/change_email/verify") {
@@ -274,6 +325,11 @@ function generateTotp(secret, timestamp) {
 
 function parseJson(value) {
   try { return JSON.parse(value || "{}"); } catch { return {}; }
+}
+
+function hasAuthContext(req, url) {
+  return (req.headers.cookie || "").split("; ").includes(`auth-flow=${authSession}`)
+    && url.search === `?${authQuery}`;
 }
 
 function hasPasswordVerifySentinel(req) {
