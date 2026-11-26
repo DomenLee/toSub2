@@ -660,6 +660,7 @@ async function sendJobsPage(res, requestedPage, emailFilter = null) {
     filter: { active: Boolean(emailSet), requested: emailFilter?.length || 0, matched: total },
     stats: {
       active: allJobs.filter(occupiesActiveSlot).length,
+      waiting: allJobs.filter(isWaitingForManualEmail).length,
       queued: allJobs.filter((job) => job.status === "queued").length,
       completed: allJobs.filter((job) => job.status === "completed").length,
     },
@@ -762,6 +763,7 @@ async function startJob(email, credentials = {}, proxyUrl = null) {
     lastAuthRequirements: null,
     authAutomationAttempt: null,
     autoRepairBlocked: false,
+    autoRetryPaused: false,
     autoRepairBlockedReason: null,
     autoRepairBlockedAt: null,
     autoRepairLastAttemptAt: null,
@@ -1949,6 +1951,8 @@ function consumeOutput(job, rawText) {
     markAuthorizationRequirement(job, "emailOtp");
     const rejected = scan.includes("[email-otp-rejected]");
     const autoMailbox = Boolean(otpMailboxForJob(job).url);
+    job.manualEmailWaiting = !autoMailbox;
+    if (!autoMailbox) job.autoRetryPaused = true;
     setStage(
       job,
       "email_otp",
@@ -1958,9 +1962,16 @@ function consumeOutput(job, rawText) {
           ? (job.runMode === "change_email"
             ? "正在自动读取源邮箱的登录验证码"
             : "正在等待收码接口返回新验证码，也可以手动输入")
-          : "请输入邮箱验证码",
+          : "已暂停，等待人工输入邮箱验证码；已释放并发名额，后续不再自动重试",
     );
     if (autoMailbox) void beginMailPolling(job);
+    else {
+      void saveJobMetadata(job).catch((error) => {
+        job.lastError = `${job.email}：保存人工等待状态失败，请重试保存或检查数据目录：${error.message}`;
+        touch(job);
+      });
+      scheduleQueuedJobs();
+    }
   }
   if (scan.includes("Password (q=quit):")) {
     markAuthorizationRequirement(job, "password");
@@ -2082,6 +2093,10 @@ function consumeOutput(job, rawText) {
 
 async function restartAfterProxyRisk(job, options = {}) {
   if (job.proxyRiskRestarting || isTerminalStatus(job.status)) return;
+  if (job.autoRetryPaused) {
+    finishProxyRiskRetries(job, "该账号已转人工处理，已停止自动重试；请处理验证后手动重新授权");
+    return;
+  }
   job.proxyRiskRestarting = true;
   const mode = job.runMode || job.queuedMode || "full";
   try {
@@ -2579,6 +2594,7 @@ async function submitJobInput(job, body, options = {}) {
   } else if (action === "email_otp") {
     requireStage(job, "email_otp");
     if (!/^\d{6}$/.test(value)) throw httpError(400, "Email code must be 6 digits");
+    requireManualEmailSlot(job);
     stopMailPolling(job);
     job.parserTail = "";
     markAuthorizationManual(job, "emailOtp");
@@ -2586,6 +2602,7 @@ async function submitJobInput(job, body, options = {}) {
     setStage(job, "working", "正在验证邮箱验证码");
   } else if (action === "resend_email") {
     requireStage(job, "email_otp");
+    requireManualEmailSlot(job);
     stopMailPolling(job);
     job.parserTail = "";
     inputValue = "r";
@@ -2636,6 +2653,7 @@ async function submitJobInput(job, body, options = {}) {
   job.parserTail = "";
   job.child.stdin.write(`${inputValue}\n`);
   touch(job);
+  if (action === "email_otp" || action === "resend_email") await saveJobMetadata(job);
 }
 
 async function cancelJob(job) {
@@ -3234,6 +3252,7 @@ function isAutoRepairCoolingDown(job) {
 }
 
 function getAutoRepairEligibility(job) {
+  if (job.autoRetryPaused) return { eligible: false, reason: "该账号已转人工处理，后续不再自动重试，请手动输入邮箱验证码或重新授权" };
   if (job.autoRepairBlocked) return { eligible: false, reason: "账号已确认封禁、删除或永久停用" };
   if (!job.lastAuthAutomated) return { eligible: false, reason: job.lastAuthAutomationReason || "上次授权不是全自动完成" };
   const requirements = job.lastAuthRequirements || {};
@@ -3432,6 +3451,7 @@ function publicJob(job) {
     restartRequired: job.restartRequired,
     proxyConfigured: Boolean(job.proxyUrl),
     autoRepairEligible: autoRepair.eligible,
+    autoRetryPaused: Boolean(job.autoRetryPaused),
     autoRepairEligibilityReason: autoRepair.reason,
     autoRepairBlocked: Boolean(job.autoRepairBlocked),
     autoRepairBlockedReason: job.autoRepairBlockedReason || null,
@@ -3542,9 +3562,11 @@ function completeAuthorizationAutomationAttempt(job) {
   job.lastAuthAutomatedAt = new Date().toISOString();
   job.lastAuthRequirements = { ...attempt.requirements };
   job.authAutomationAttempt = null;
-  appendJobLog(job, job.lastAuthAutomated
-    ? "[automation] 本次完整登录已记录为可自动修复。\n"
-    : `[automation] 本次完整登录不可自动修复：${job.lastAuthAutomationReason}。\n`);
+  appendJobLog(job, job.autoRetryPaused
+    ? "[automation] 该账号已转人工处理，继续保留停止自动重试状态。\n"
+    : job.lastAuthAutomated
+      ? "[automation] 本次完整登录已记录为可自动修复。\n"
+      : `[automation] 本次完整登录不可自动修复：${job.lastAuthAutomationReason}。\n`);
 }
 
 function clearAutoRepairBlock(job) {
@@ -3595,7 +3617,19 @@ function isActive(status) {
 }
 
 function occupiesActiveSlot(job) {
-  return isActive(job.status) && job.status !== "queued";
+  return isActive(job.status) && job.status !== "queued" && !isWaitingForManualEmail(job);
+}
+
+function isWaitingForManualEmail(job) {
+  return job.status === "email_otp" && job.manualEmailWaiting === true;
+}
+
+function requireManualEmailSlot(job) {
+  if (!isWaitingForManualEmail(job)) return;
+  if (shuttingDown) throw httpError(503, `${job.email}：服务正在关闭，请稍后手动重新授权`);
+  if ([...jobs.values()].filter(occupiesActiveSlot).length >= MAX_ACTIVE_JOBS) {
+    throw httpError(409, `${job.email}：当前并发名额已满，请等待进行中任务结束后再次提交验证码或重发`);
+  }
 }
 
 function getQueuePosition(job) {
@@ -4254,6 +4288,12 @@ function restoredAutoRepairState(metadata = {}) {
     ? metadata.auto_repair_pending_account_ids.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0)
     : [];
   return {
+    autoRetryPaused: metadata.auto_retry_paused === true
+      || (metadata.status === "email_otp" && !otpMailboxForJob({
+        mailApiUrl: validateMailApiUrl(metadata.mail_api_url) ? metadata.mail_api_url : null,
+        queuedMode: metadata.queued_mode,
+        emailChangeSourceMailApiUrl: metadata.email_change_source_mail_api_url,
+      }).url),
     lastAuthAutomated: metadata.last_auth_automated === true,
     lastAuthAutomationReason: String(metadata.last_auth_automation_reason || "旧任务没有自动化参与记录"),
     lastAuthAutomatedAt: metadata.last_auth_automated_at || null,
@@ -4826,6 +4866,7 @@ async function saveJobMetadata(job) {
         last_auth_automation_reason: job.lastAuthAutomationReason || null,
         last_auth_automated_at: job.lastAuthAutomatedAt || null,
         last_auth_requirements: job.lastAuthRequirements || null,
+        auto_retry_paused: Boolean(job.autoRetryPaused),
         auto_repair_blocked: Boolean(job.autoRepairBlocked),
         auto_repair_blocked_reason: job.autoRepairBlockedReason || null,
         auto_repair_blocked_at: job.autoRepairBlockedAt || null,

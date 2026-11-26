@@ -8,11 +8,12 @@ import react from "@vitejs/plugin-react";
 import { testUI } from "./accounts.ui.test.mjs";
 import { testAuthUI } from "./auth.ui.test.mjs";
 import { testUsageUI } from "./usage.ui.test.mjs";
+import { testManualEmailUI } from "./manual-email.ui.test.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const temporary = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tosub2-build-")));
 try {
-  for (const name of ["test.mjs", "auth.test.mjs", "session.test.mjs", "identity.test.mjs", "binding.test.mjs", "repair.test.mjs", "accounts.test.mjs", "usage.test.mjs"]) execFileSync(process.execPath, [path.join(root, "deploy/server", name)], { cwd: root, stdio: "inherit" });
+  for (const name of ["test.mjs", "sync-defaults.test.mjs", "auth.test.mjs", "session.test.mjs", "identity.test.mjs", "binding.test.mjs", "repair.test.mjs", "accounts.test.mjs", "usage.test.mjs"]) execFileSync(process.execPath, [path.join(root, "deploy/server", name)], { cwd: root, stdio: "inherit" });
   for (const name of ["src", "web", "package.json"]) await fs.cp(path.join(root, name), path.join(temporary, name), { recursive: true });
   await fs.symlink(path.join(root, "node_modules"), path.join(temporary, "node_modules"), "junction");
   execFileSync(process.execPath, [path.join(root, "deploy/server/patch.mjs"), temporary], { stdio: "inherit" });
@@ -24,6 +25,7 @@ try {
   await testUI(temporary);
   await testAuthUI(temporary);
   await testUsageUI(temporary);
+  await testManualEmailUI(temporary);
   console.log("PASS: exact production patches, runtime syntax and frontend build");
 } finally {
   await fs.rm(temporary, { recursive: true, force: true });

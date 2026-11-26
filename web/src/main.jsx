@@ -762,7 +762,7 @@ function App() {
   }
 
   async function cancelAllRunningJobs() {
-    const runningCount = (stats.active || 0) + (stats.queued || 0);
+    const runningCount = (stats.active || 0) + (stats.queued || 0) + (stats.waiting || 0);
     if (!runningCount || batchAction) return;
     if (!window.confirm(`确定停止全部 ${runningCount} 条进行中和排队任务吗？`)) return;
     setBatchAction("cancel-all");
@@ -790,6 +790,7 @@ function App() {
         <div className="summary" aria-label="任务统计">
           <span><i className="status-dot active" />进行中 <strong>{stats.active}</strong></span>
           <span><i className="status-dot queued" />排队中 <strong>{stats.queued || 0}</strong></span>
+          <span><i className="status-dot queued" />待人工 <strong>{stats.waiting || 0}</strong></span>
           <span><i className="status-dot complete" />已完成 <strong>{stats.completed}</strong></span>
         </div>
       </header>
@@ -920,12 +921,12 @@ function App() {
               </button>}
             </div>
             <div className="bulk-actions">
-              {features.cancelAll && Boolean(stats.active || stats.queued) && (
+              {features.cancelAll && Boolean(stats.active || stats.queued || stats.waiting) && (
                 <button
                   type="button"
                   className="stop-all-button"
                   onClick={cancelAllRunningJobs}
-                  disabled={!(stats.active || stats.queued) || Boolean(batchAction)}
+                  disabled={!(stats.active || stats.queued || stats.waiting) || Boolean(batchAction)}
                 >
                   {batchAction === "cancel-all" ? <LoaderCircle className="spin" size={16} /> : <Ban size={16} />}
                   停止全部
@@ -1683,6 +1684,7 @@ function AccountSummary({ jobs, details, loading, error, updatedAt, onRefresh })
 function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggleSelected, selectionSupported, smsProviderAvailable, smsProvider, onUpload, sub2apiUploadAvailable, totpSetupAvailable, passwordAddAvailable, emailChangeAvailable, emailPoolAvailable, onEmailPoolChanged, forceReloginAvailable, accountProxyUrl, linkedAccountEnabled, linkedAccount, linkedAccountLoading }) {
   const terminal = ["completed", "failed", "canceled", "reauth_required", "resume_available"].includes(job.status);
   const [value, setValue] = useState("");
+  const [inputError, setInputError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [mobileCollapsed, setMobileCollapsed] = useState(terminal);
   const [actionsOpen, setActionsOpen] = useState(false);
@@ -1694,7 +1696,7 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
   const [poolAvailable, setPoolAvailable] = useState(emailPoolAvailable || 0);
   const actionsId = `job-actions-${job.id}`;
 
-  useEffect(() => setValue(""), [job.status]);
+  useEffect(() => { setValue(""); setInputError(""); }, [job.status]);
   useEffect(() => {
     if (!terminal) setMobileCollapsed(false);
   }, [terminal]);
@@ -1717,8 +1719,10 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
         body: JSON.stringify({ action, value: submittedValue }),
       });
       setValue("");
+      setInputError("");
       onError("");
     } catch (requestError) {
+      setInputError(`${job.email}：${requestError.message}`);
       onError(requestError.message);
     } finally {
       setSubmitting(false);
@@ -1939,9 +1943,13 @@ function JobRow({ job, token, expanded, onToggleLogs, onError, selected, onToggl
       <td data-label="状态"><StatusBadge status={job.status} /></td>
       <td className="step-cell" data-label="当前操作">
         <div className="prompt-line">{job.prompt}</div>
+        {inputError && <div className="row-error" role="alert">{inputError}</div>}
         {job.lastError && <div className="row-error">{extractResponseMessage(job.lastError)}</div>}
         {job.autoRepairBlocked && (
           <div className="row-error">号池监控已永久跳过：{extractResponseMessage(job.autoRepairBlockedReason || "账号已不可用")}</div>
+        )}
+        {job.autoRetryPaused && (
+          <div className="row-error">{job.email} 已转人工处理，后续不再自动重试；请提交邮箱验证码，或手动重新授权。</div>
         )}
         {job.totpSetupError && <div className="row-error">2FA：{extractResponseMessage(job.totpSetupError)}</div>}
         {job.passwordAddError && <div className="row-error">添加密码：{extractResponseMessage(job.passwordAddError)}</div>}

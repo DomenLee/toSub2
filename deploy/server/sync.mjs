@@ -89,12 +89,14 @@ export async function createSync({ jobs, request, stateFile = "/data/sync-state.
       await save();
       const matches = [];
       let ambiguousLegacy = false;
+      let emailExists = false;
       for (let page = 1; ; page++) {
         if (page > 100) throw new Error("账号查询结果过多，请在本项目核对重复账号");
         const result = await request(`/api/v1/admin/accounts?platform=openai&type=oauth&search=${encodeURIComponent(job.email)}&page_size=100&page=${page}`);
         if (!Array.isArray(result.items) || !Number.isInteger(result.pages)) throw new Error("账号查询响应格式异常，请检查本项目接口");
         for (const account of result.items) {
           if (account.platform !== "openai" || account.type !== "oauth" || account.parent_account_id || emailOf(account) !== job.email.toLowerCase()) continue;
+          emailExists = true;
           if (workspaceOf(account) === workspaceID || legacyMatch(account)) matches.push(account);
           else if (!workspaceOf(account)) ambiguousLegacy = true;
         }
@@ -102,7 +104,9 @@ export async function createSync({ jobs, request, stateFile = "/data/sync-state.
       }
       const linked = matches.find(account => account.id === previous?.accountID);
       if (matches.length > 1 && !linked) throw new Error("发现同邮箱同工作区的重复账号，请在本项目合并后重试");
-      if (!matches.length && (previous?.accountID || ambiguousLegacy)) throw new Error("原账号对应关系无法确认，请核对账号与工作区，禁止自动新增重复账号");
+      const renamedEmail = String(job.emailRenamedFrom || "").trim().toLowerCase();
+      const canCreateRenamed = renamedEmail && renamedEmail !== job.email.toLowerCase() && !emailExists && tokenWorkspaceOf(original) === workspaceID;
+      if (!matches.length && ((previous?.accountID && !canCreateRenamed) || ambiguousLegacy || (renamedEmail && emailExists))) throw new Error("原账号对应关系无法确认，请核对账号与工作区，禁止自动新增重复账号");
       let accountID;
       if (matches.length) {
         accountID = (linked || matches[0]).id;
@@ -118,8 +122,22 @@ export async function createSync({ jobs, request, stateFile = "/data/sync-state.
           await request(`/api/v1/admin/accounts/${accountID}/schedulable`, { method: "POST", body: { schedulable: true } });
         }
       } else {
-        const { proxy_key, group_ids, proxy_id, ...defaults } = source;
-        const created = await request("/api/v1/admin/accounts", { method: "POST", body: defaults, headers: { "Idempotency-Key": "tosub2-" + digest } });
+        const groups = await request("/api/v1/admin/groups/all?platform=openai");
+        if (!Array.isArray(groups)) throw new Error("分组查询响应格式异常，请检查 Sub2API 分组后重试同步");
+        const groupIDs = [...new Set(groups.filter(group => group && Number.isSafeInteger(group.id) && group.id > 0 && group.platform === "openai" && group.status === "active" && !group.auto_route_enabled && Number.isFinite(group.rate_multiplier) && (group.rate_multiplier >= 1.8 || group.is_exclusive === true)).map(group => group.id))].sort((left, right) => left - right);
+        if (!groupIDs.length) throw new Error("没有可用的 1.8 倍及以上或专属 OpenAI 分组，请配置分组后重试同步");
+        const { proxy_key, ...defaults } = source;
+        const { openai_first_serve, ...extra } = source.extra;
+        const body = {
+          ...defaults,
+          priority: 1,
+          concurrency: 10,
+          group_ids: groupIDs,
+          proxy_id: null,
+          proxy_group_id: null,
+          extra: { ...extra, openai_oauth_responses_websockets_v2_mode: "off", openai_oauth_responses_websockets_v2_enabled: false, responses_websockets_v2_enabled: false, openai_ws_enabled: false, codex_fingerprint_mode: "full" },
+        };
+        const created = await request("/api/v1/admin/accounts", { method: "POST", body, headers: { "Idempotency-Key": "tosub2-" + digest } });
         if (!Number.isSafeInteger(created.id) || created.id <= 0) throw new Error("新增账号响应无有效编号，请核对本项目后重试");
         accountID = created.id;
       }

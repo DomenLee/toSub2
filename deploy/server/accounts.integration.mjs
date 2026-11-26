@@ -13,6 +13,7 @@ const deleted = [];
 let migrations = 0;
 let failDelete = true;
 let usageProbes = 0;
+let createdAccounts = 0;
 const password = crypto.randomBytes(6).toString("hex");
 process.env.CONSOLE_PASSWORD_FILE = "/data/console-password";
 process.env.CREDENTIAL_KEY_FILE = "/data/credential-key";
@@ -44,7 +45,30 @@ const upstream = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://sub2api:8080");
   let data;
   const match = /^\/api\/v1\/admin\/accounts\/(\d+)$/.exec(url.pathname);
-  if (url.pathname === "/api/v1/admin/usage/stats") {
+  if (url.pathname === "/api/v1/admin/groups/all") {
+    data = [
+      { id: 2, platform: "openai", status: "active", rate_multiplier: 1.8 },
+      { id: 13, platform: "openai", status: "active", rate_multiplier: 0.01, is_exclusive: true },
+      { id: 3, platform: "openai", status: "active", rate_multiplier: 1 },
+    ];
+  } else if (url.pathname === "/api/v1/admin/accounts" && req.method === "GET") {
+    data = { items: [...accounts.values()], pages: 1 };
+  } else if (url.pathname === "/api/v1/admin/accounts" && req.method === "POST") {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString());
+    assert.equal(body.priority, 1);
+    assert.equal(body.concurrency, 10);
+    assert.deepEqual(body.group_ids, [2, 13]);
+    assert.equal(body.proxy_id, null);
+    assert.equal(body.proxy_group_id, null);
+    assert.equal(body.extra.openai_oauth_responses_websockets_v2_mode, "off");
+    assert.equal(body.extra.codex_fingerprint_mode, "full");
+    assert.match(req.headers["idempotency-key"], /^tosub2-[a-f0-9]{64}$/);
+    createdAccounts++;
+    data = { ...body, id: 45, status: "active", schedulable: true };
+    accounts.set(45, data);
+  } else if (url.pathname === "/api/v1/admin/usage/stats") {
     assert.equal(url.searchParams.get("start_date"), "1970-01-01");
     data = { total_actual_cost: 12.345678 };
   } else if (url.pathname === "/api/v1/admin/accounts/42/usage" && req.method === "GET") {
@@ -181,6 +205,29 @@ try {
   assert.deepEqual(deleted, [42, 43]);
   const page = await (await fetch(base + "/api/jobs", { headers })).json();
   assert.equal(page.jobs.length, 0);
+  await stop();
+  const renameID = "11111111-1111-4111-8111-000000000004";
+  const renameEmail = "renamed@example.invalid";
+  const renameDirectory = `/data/jobs/${renameID}`;
+  const oldAccount = structuredClone(accounts.get(44));
+  await fs.mkdir(renameDirectory);
+  const newAccess = `test.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "workspace-44" } })).toString("base64url")}.test`;
+  await fs.writeFile(`${renameDirectory}/sub2api-import-oauth.json`, JSON.stringify({ type: "sub2api-data", accounts: [{ name: renameEmail, platform: "openai", type: "oauth", credentials: { email: renameEmail, access_token: newAccess, refresh_token: "NEW_FAKE_REFRESH" }, priority: 9, concurrency: 3, proxy_id: 9 }] }));
+  await fs.writeFile(`${renameDirectory}/job-meta.json`, JSON.stringify({ email: renameEmail, email_renamed_from: definitions[2].email, status: "completed", result_saved: true }));
+  const savedState = JSON.parse(await fs.readFile("/data/sync-state.json", "utf8"));
+  savedState[renameID] = { email: renameEmail, accountID: 44, workspaceID: "workspace-44", digest: "old-digest", status: "failed" };
+  await fs.writeFile("/data/sync-state.json", JSON.stringify(savedState));
+  await start();
+  await post("/api/auto-sync/retry", { id: renameID });
+  const renamedSync = await (await fetch(base + "/api/auto-sync", { headers })).json();
+  assert.equal(renamedSync.items.find(item => item.id === renameID).accountID, 45);
+  assert.equal(renamedSync.items.find(item => item.id === renameID).status, "synced");
+  assert.deepEqual(accounts.get(44), oldAccount);
+  await stop();
+  await start();
+  await post("/api/auto-sync/retry", { id: renameID });
+  assert.equal(createdAccounts, 1);
+  console.log("PASS: production renamed-email recovery creates once with requested defaults, keeps old remote account and restores the new binding after restart");
   console.log("PASS: production API legacy binding migration without token replay, preserved 401/configuration, authentication, group/cost readback, redaction, partial delete, restart fencing, retry and local-only default");
 } finally {
   await stop();
