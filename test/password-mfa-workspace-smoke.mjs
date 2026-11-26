@@ -90,6 +90,9 @@ try {
 
   const emailExport = JSON.parse(await fs.readFile(emailOutputPath, "utf8"));
   assert.equal(emailExport.accounts?.[0]?.credentials?.email, "email-mfa@example.com");
+  assert.equal(stateAfterEmailLogin.emailOtpValidationCount, 1);
+  assert.equal(stateAfterEmailLogin.passwordVerifyCount, 0);
+  assert.equal(stateAfterEmailLogin.passwordPageVisits, 0);
 
   const skipWorkspaceLogin = await runNode([
     path.join(projectRoot, "src", "protocol-login.mjs"),
@@ -165,11 +168,64 @@ try {
   assert.equal(setupResult.activation_mode, "automatic");
   assert.equal(setupResult.activation_succeeded, true);
 
+  const switchedOutputPath = path.join(tempRoot, "switched-sub2api-import-oauth.json");
+  const switchedLogin = await runNode([
+    path.join(projectRoot, "src", "protocol-login.mjs"),
+    "--email", "switch-password@example.com",
+    "--chatgpt-base", baseUrl,
+    "--auth-base", baseUrl,
+    "--output-mode", "sub2api",
+    "--sub2api-out", switchedOutputPath,
+    "--checkpoint", path.join(tempRoot, "switched-login-checkpoint.json"),
+  ], {
+    CHATGPT_LOGIN_PASSWORD: "local-test-password",
+    CHATGPT_TOTP_SECRET: "JBSWY3DPEHPK3PXP",
+  });
+  assert.equal(switchedLogin.code, 0, processFailure(switchedLogin));
+  assert.match(switchedLogin.output, /\[ok\] Password accepted/);
+  assert.match(switchedLogin.output, /\[ok\] 2FA verification accepted/);
+  assert.doesNotMatch(switchedLogin.output, /Email OTP page reached/);
+  assertPasswordSwitch(await fetch(`${baseUrl}/__test/state`).then((response) => response.json()));
+  const switchedExport = JSON.parse(await fs.readFile(switchedOutputPath, "utf8"));
+  assert.equal(switchedExport.accounts?.[0]?.credentials?.email, "switch-password@example.com");
+
+  for (const changeEmail of [false, true]) {
+    const unavailableResultPath = path.join(tempRoot, `unavailable-${changeEmail}.json`);
+    const before = await fetch(`${baseUrl}/__test/state`).then((response) => response.json());
+    const unavailable = await runNode([
+      path.join(projectRoot, "src", "protocol-login.mjs"),
+      "--email", "switch-unavailable@example.com",
+      "--chatgpt-base", baseUrl,
+      "--auth-base", baseUrl,
+      ...(changeEmail
+        ? ["--change-email", "--email-change-result", unavailableResultPath]
+        : ["--output-mode", "sub2api", "--sub2api-out", unavailableResultPath, "--checkpoint", path.join(tempRoot, "unavailable-checkpoint.json")]),
+    ], {
+      CHATGPT_LOGIN_PASSWORD: "local-test-password",
+      CHATGPT_TOTP_SECRET: "JBSWY3DPEHPK3PXP",
+      CHATGPT_NEW_EMAIL: "next-box@example.com",
+      CHATGPT_NEW_MAIL_API_URL: `${baseUrl}/mail-code`,
+    });
+    assert.equal(unavailable.code, 1, processFailure(unavailable));
+    assert.match(unavailable.output, /WEB_PASSWORD_LOGIN_UNAVAILABLE/);
+    assert.doesNotMatch(unavailable.output, /Email OTP page reached|Password accepted|\[email-change-ok\]/);
+    const after = await fetch(`${baseUrl}/__test/state`).then((response) => response.json());
+    assert.equal(after.passwordPageVisits, 1);
+    assert.equal(after.passwordVerifyCount, 0);
+    assert.equal(after.emailOtpValidationCount, 0);
+    assert.equal(after.emailOtpResendCount, 0);
+    assert.equal(after.authorizeContinueCount, 0);
+    assert.equal(after.mfaVerificationCount, 0);
+    assert.equal(after.emailChangeBeginCount, 0);
+    assert.equal(after.oauthTokenRequests, before.oauthTokenRequests);
+    await assert.rejects(fs.access(unavailableResultPath), { code: "ENOENT" });
+  }
+
   const emailChangeResultPath = path.join(tempRoot, "email-change-result.json");
   const tokenRequestsBeforeChange = (await fetch(`${baseUrl}/__test/state`).then((response) => response.json())).oauthTokenRequests;
   const emailChange = await runNode([
     path.join(projectRoot, "src", "protocol-login.mjs"),
-    "--email", "mfa-test@example.com",
+    "--email", "switch-password@example.com",
     "--change-email",
     "--email-change-result", emailChangeResultPath,
     "--chatgpt-base", baseUrl,
@@ -188,8 +244,8 @@ try {
   assert.doesNotMatch(emailChange.output, /Email OTP/);
   assert.doesNotMatch(emailChange.output, /Start Codex OAuth/);
   const webLoginState = await fetch(`${baseUrl}/__test/state`).then((response) => response.json());
-  assert.equal(webLoginState.signinConnection, "password");
-  assert.equal(webLoginState.signinScreenHint, "login");
+  assertPasswordSwitch(webLoginState);
+  assert.equal(webLoginState.emailChangeBeginCount, 1);
   assert.equal(webLoginState.oauthTokenRequests, tokenRequestsBeforeChange);
   const emailChangeResult = JSON.parse(await fs.readFile(emailChangeResultPath, "utf8"));
   assert.equal(emailChangeResult.new_email, "next-box@example.com");
@@ -211,6 +267,8 @@ async function runNode(args, extraEnv, inputSteps = []) {
       NODE_ENV: "test",
       TOSUB2_TEST_SENTINEL_TOKEN: "mock-password-verify-challenge",
       TOSUB2_TEST_SENTINEL_SO_TOKEN: "mock-so-token",
+      CHATGPT_LOGIN_PASSWORD: "",
+      CHATGPT_TOTP_SECRET: "",
       ...extraEnv,
     },
     stdio: ["pipe", "pipe", "pipe"],
@@ -246,6 +304,17 @@ async function runNode(args, extraEnv, inputSteps = []) {
     throw new Error("password + 2FA protocol test timed out");
   }
   return { ...result, output: `${stdout}\n${stderr}` };
+}
+
+function assertPasswordSwitch(state) {
+  assert.equal(state.signinConnection, "");
+  assert.equal(state.signinScreenHint, "login_or_signup");
+  assert.equal(state.passwordPageVisits, 1);
+  assert.equal(state.passwordVerifyCount, 1);
+  assert.equal(state.emailOtpValidationCount, 0);
+  assert.equal(state.emailOtpResendCount, 0);
+  assert.equal(state.authorizeContinueCount, 0);
+  assert.equal(state.mfaVerificationCount, 1);
 }
 
 async function waitForServer() {

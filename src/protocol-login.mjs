@@ -532,7 +532,6 @@ async function run() {
             rl,
             password,
             totpSecret: process.env.CHATGPT_TOTP_SECRET || "",
-            passwordFirst: true,
           });
           try {
             await changeChatgptEmail(client, {
@@ -1149,7 +1148,7 @@ async function askSetupTotpOtp(rl) {
   }
 }
 
-async function loginChatgptWeb(client, { chatgptBase, authBase, email, rl, password, totpSecret, passwordFirst = false }) {
+async function loginChatgptWeb(client, { chatgptBase, authBase, email, rl, password, totpSecret }) {
   await client.follow(`${chatgptBase}/`, { referer: `${chatgptBase}/` });
   await client.getJson("GET", `${chatgptBase}/api/auth/providers`, {
     referer: `${chatgptBase}/`,
@@ -1165,15 +1164,14 @@ async function loginChatgptWeb(client, { chatgptBase, authBase, email, rl, passw
 
   const deviceId = client.jar.value("oai-did", `${chatgptBase}/`) || crypto.randomUUID();
   const authSessionLoggingId = crypto.randomUUID();
-  const usePassword = Boolean(passwordFirst && password);
+  const usePassword = Boolean(password);
   const signinParams = new URLSearchParams({
     prompt: "login",
     "ext-oai-did": deviceId,
     auth_session_logging_id: authSessionLoggingId,
-    screen_hint: usePassword ? "login" : "login_or_signup",
+    screen_hint: "login_or_signup",
     login_hint: email,
   });
-  if (usePassword) signinParams.set("connection", "password");
   const signinUrl = `${chatgptBase}/api/auth/signin/openai?${signinParams.toString()}`;
 
   const { data: signin } = await client.getJson("POST", signinUrl, {
@@ -1188,10 +1186,18 @@ async function loginChatgptWeb(client, { chatgptBase, authBase, email, rl, passw
   if (!signin.url) throw new Error("signin/openai did not return url");
 
   const authRequestStartedAt = new Date().toISOString();
-  const authPage = await client.follow(signin.url, { referer: `${chatgptBase}/` });
+  let authPage = await client.follow(signin.url, { referer: `${chatgptBase}/` });
   console.log(`[info] Auth page: ${safeUrl(authPage.finalUrl)}`);
   if (authPage.last?.text) {
     console.log(`[info] Page text: ${summarizeHtml(authPage.last.text)}`);
+  }
+
+  if (isEmailVerificationPage(authPage.finalUrl) && usePassword) {
+    console.log("[web] Email-code page reached; switching to password login in the same session.");
+    authPage = await requestPasswordLogin(client, {
+      authBase,
+      referer: authPage.finalUrl,
+    });
   }
 
   let authenticated;
@@ -1205,28 +1211,6 @@ async function loginChatgptWeb(client, { chatgptBase, authBase, email, rl, passw
       deviceId,
       password,
       referer: authPage.finalUrl,
-    });
-  } else if (isEmailVerificationPage(authPage.finalUrl) && usePassword) {
-    console.log("[web] Email-code page appeared during password login; requesting the password page.");
-    const switched = await requestPasswordLogin(client, {
-      authBase,
-      email,
-      deviceId,
-      referer: authPage.finalUrl,
-    });
-    const nextUrl = getContinueUrl(switched) || "";
-    if (!(isPasswordLoginPage(nextUrl) || switched?.page?.type === "login_password")) {
-      throw new Error("WEB_PASSWORD_LOGIN_UNAVAILABLE: 网页登录没有进入密码页，未改用邮箱验证码");
-    }
-    if (nextUrl) await client.follow(nextUrl, { referer: authPage.finalUrl });
-    loginMethod = "password";
-    console.log("[3/5] Password login page reached.");
-    authenticated = await verifyPassword(client, {
-      authBase,
-      rl,
-      deviceId,
-      password,
-      referer: nextUrl || `${authBase}/log-in/password`,
     });
   } else if (isEmailVerificationPage(authPage.finalUrl)) {
     loginMethod = "email_otp";
@@ -1279,17 +1263,19 @@ async function loginChatgptWeb(client, { chatgptBase, authBase, email, rl, passw
   };
 }
 
-async function requestPasswordLogin(client, { authBase, email, deviceId, referer }) {
-  const sentinelHeaders = await createSentinelHeaders(client, {
-    authBase,
-    deviceId,
-    flow: "authorize_continue",
-  });
-  const { data } = await authJsonStep(client, authBase, "POST", "/api/accounts/authorize/continue", {
-    username: { value: email, kind: "email" },
-    screen_hint: "login",
-  }, { referer, headers: sentinelHeaders });
-  return data;
+async function requestPasswordLogin(client, { authBase, referer }) {
+  const passwordUrl = new URL(referer);
+  const authOrigin = new URL(authBase).origin;
+  if (passwordUrl.origin !== authOrigin) {
+    throw new Error("WEB_PASSWORD_LOGIN_UNAVAILABLE: 当前验证页不属于认证站点，请重新登录后重试");
+  }
+  // Keep auth_page and other query parameters in the original cookie session.
+  passwordUrl.pathname = "/log-in/password";
+  const page = await client.follow(passwordUrl.toString(), { referer });
+  if (new URL(page.finalUrl).origin !== authOrigin || !isPasswordLoginPage(page.finalUrl)) {
+    throw new Error("WEB_PASSWORD_LOGIN_UNAVAILABLE: 网页登录没有进入密码页，请检查账号密码登录方式后重试");
+  }
+  return page;
 }
 
 async function selectChatgptLoginWorkspaceIfNeeded(client, { authBase, payload }) {
